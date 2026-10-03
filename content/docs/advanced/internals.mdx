@@ -37,6 +37,7 @@ A component whose object is not yet in a hierarchy with an attached context has 
 | `_awoken` | `true` after `onAwake` has fired. Never reset. |
 | `_started` | `true` after `onStart` has fired. Never reset. |
 | `_isActive` | `true` while the component is currently subscribed to ctx events. Set by `_activate` / cleared by `_deactivate`. Tracks the effective lifecycle state (object's `activeInHierarchy` AND component's `enabled`). |
+| `_activation` | Counter bumped by every `_activate` / `_deactivate`. An activation that sees it changed after a hook stops: the hook disabled the component, or disabled and re-enabled it (the nested activation already ran the sequence). |
 | `_enabled` (private) | User-facing `enabled` flag, controlled via `enable()`/`disable()`/`setEnabled()`. |
 
 ## Extension state
@@ -150,15 +151,16 @@ Implemented in `Object3DBehaviour._activate()`:
 if already active: return
 if no ctx: return
 _isActive = true
-if !_awoken:  _awoken = true;  callHook(onAwake);  if !_isActive: return
-callHook(onEnable);                                if !_isActive: return
-if !_started: _started = true; callHook(onStart);  if !_isActive: return
+activation = ++_activation
+if !_awoken:  _awoken = true;  callHook(onAwake);  if _activation != activation: return
+callHook(onEnable);                                if _activation != activation: return
+if !_started: _started = true; callHook(onStart);  if _activation != activation: return
 _subscribe()
 ```
 
-Subscription is last, so a component's per-frame method can never fire before its own `onStart`. Each hook goes through `callHook` (see "Error isolation"). The `_isActive` re-checks stop the sequence when a hook — or an `Error` listener reacting to a throwing hook — disabled or destroyed the component mid-activation; without them the component would subscribe to per-frame events while disabled.
+Subscription is last, so a component's per-frame method can never fire before its own `onStart`. Each hook goes through `callHook` (see "Error isolation"). The `_activation` re-checks stop the sequence when a hook — or an `Error` listener reacting to a throwing hook — disabled or destroyed the component mid-activation (without them it would subscribe to per-frame events while disabled), or disabled and re-enabled it: the nested `_activate` has already subscribed, and a second `_subscribe` would call every per-frame method twice per frame. A plain `_isActive` check can't tell the second case apart — the flag is `true` again.
 
-`_deactivate()` calls `_unsubscribe()` + `callHook(onDisable)` and flips `_isActive = false`. `_destroy()` calls `_deactivate()`, then `callHook(onDestroy)`, then `_removeAllListeners()` on the inner emitter (provided by `TypedEmitter`), then nulls out back-pointers.
+`_deactivate()` flips `_isActive = false`, bumps `_activation`, then calls `_unsubscribe()` + `callHook(onDisable)`. `_destroy()` calls `_deactivate()`, then `callHook(onDestroy)`, then `_removeAllListeners()` on the inner emitter (provided by `TypedEmitter`), then nulls out back-pointers.
 
 ## Component construction and `addComponent` typing
 

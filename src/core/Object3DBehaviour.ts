@@ -24,6 +24,8 @@ export abstract class Object3DBehaviour<
 	/** @internal */ _awoken = false;
 	/** @internal */ _started = false;
 	/** @internal */ _isActive = false;
+	/** @internal Bumped by every `_activate` / `_deactivate`: a hook that re-entered them invalidates the outer activation. */
+	_activation = 0;
 
 	private _enabled = true;
 
@@ -74,26 +76,28 @@ export abstract class Object3DBehaviour<
 	/**
 	 * @internal Called when object active + component enabled + context available.
 	 * Handles: awake (once) → enable → start (once) → subscribe. A hook that throws is
-	 * reported and the sequence goes on; one that deactivates the component stops it.
+	 * reported and the sequence goes on; one that deactivated (or re-activated) the
+	 * component stops it — the nested call already finished the job.
 	 */
 	_activate() {
 		if (this._isActive) return;
 		if (!this._ctx) return;
 		this._isActive = true;
+		const activation = ++this._activation;
 
 		if (!this._awoken) {
 			this._awoken = true;
 			callHook(this, "onAwake");
-			if (!this._isActive) return;
+			if (this._activation !== activation) return;
 		}
 
 		callHook(this, "onEnable");
-		if (!this._isActive) return;
+		if (this._activation !== activation) return;
 
 		if (!this._started) {
 			this._started = true;
 			callHook(this, "onStart");
-			if (!this._isActive) return;
+			if (this._activation !== activation) return;
 		}
 
 		this._subscribe();
@@ -106,6 +110,7 @@ export abstract class Object3DBehaviour<
 	_deactivate() {
 		if (!this._isActive) return;
 		this._isActive = false;
+		this._activation++;
 
 		this._unsubscribe();
 		callHook(this, "onDisable");
