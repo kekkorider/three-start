@@ -2,8 +2,10 @@ import * as THREE from "three/webgpu";
 import { createReadonlyView, defineProps, readOnly } from "./utils/define-props";
 import { pass } from "three/tsl";
 import type { ContextModule, ThreeStartModules } from "./ContextModule";
+import type { Object3DBehaviour } from "./Object3DBehaviour";
 import type { ThreeStartOptions } from "./ThreeStart";
-import { TypedEmitter } from "./TypedEmitter";
+import { type ListenerErrorHandler, TypedEmitter } from "./TypedEmitter";
+import { logError } from "./utils/lifecycle-errors";
 
 // three-start
 
@@ -162,7 +164,7 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		canvas.style.outline = "none";
 		canvas.style.touchAction = "none";
 
-		this.emit(ThreeContextEvents.Mount, container);
+		this._emitIsolated(ThreeContextEvents.Mount, this._onListenerError, container);
 
 		this._resizeObserver = new ResizeObserver(this.resizeHandler);
 		this._resizeObserver.observe(container);
@@ -185,7 +187,7 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		this._resizeObserver = null;
 		this.renderer.domElement.remove();
 
-		this.emit(ThreeContextEvents.Unmount);
+		this._emitIsolated(ThreeContextEvents.Unmount, this._onListenerError);
 
 		if (!this.options.manageLoopManually) {
 			this.stopLoop();
@@ -212,10 +214,10 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 			// its delta can't go negative.
 			this._timer.update(isFirstTick ? undefined : timestamp);
 			isFirstTick = false;
-			this.emit(ThreeContextEvents.Update);
+			this._emitIsolated(ThreeContextEvents.Update, this._onListenerError);
 			this.render();
 		});
-		this.emit(ThreeContextEvents.LoopRun);
+		this._emitIsolated(ThreeContextEvents.LoopRun, this._onListenerError);
 	};
 
 	/**
@@ -229,7 +231,7 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		this._timer.disconnect();
 
 		this.renderer.setAnimationLoop(null);
-		this.emit(ThreeContextEvents.LoopStop);
+		this._emitIsolated(ThreeContextEvents.LoopStop, this._onListenerError);
 	};
 
 	/**
@@ -247,9 +249,9 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 
 	/** Render once using the current render function. Fires `RenderBefore` / `RenderAfter`. */
 	render = (): void => {
-		this.emit(ThreeContextEvents.RenderBefore);
+		this._emitIsolated(ThreeContextEvents.RenderBefore, this._onListenerError);
 		this._renderFn();
-		this.emit(ThreeContextEvents.RenderAfter);
+		this._emitIsolated(ThreeContextEvents.RenderAfter, this._onListenerError);
 	};
 
 	/** Replace the render function with a custom implementation. Restore via `resetRender()`. */
@@ -264,6 +266,55 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		return this;
 	};
 
+	/**
+	 * @internal Report an error thrown by user code: fires `Error`, or logs it with
+	 * `console.error` when nobody listens. Never throws.
+	 */
+	_reportError(
+		error: unknown,
+		source: Object3DBehaviour | ContextModule | null,
+		hook: LifecycleHook | ThreeContextEvents
+	): void {
+		const heard = this._emitIsolated(
+			ThreeContextEvents.Error,
+			logErrorListenerFailure,
+			error,
+			source,
+			hook
+		);
+		if (!heard) logError(error, source, hook);
+	}
+
+	/** Attributes a throwing ctx listener to its behaviour/module, then reports it. */
+	private _onListenerError: ListenerErrorHandler = (error, event, fn, context) => {
+		const frameHook = FRAME_HOOKS[event as ThreeContextEvents];
+		const owner = context as Partial<Record<LifecycleHook, unknown>> | null;
+		if (frameHook && owner?.[frameHook] === fn) {
+			this._reportError(
+				error,
+				owner as Object3DBehaviour | ContextModule,
+				frameHook
+			);
+			return;
+		}
+		this._reportError(
+			error,
+			this._asErrorSource(context),
+			event as ThreeContextEvents
+		);
+	};
+
+	/** The behaviour or registered module a listener was bound to, if any. Error path only. */
+	private _asErrorSource(context: unknown): Object3DBehaviour | ContextModule | null {
+		if ((context as Object3DBehaviour | null)?.isObject3DBehaviour === true) {
+			return context as Object3DBehaviour;
+		}
+		const modules = Object.values(this._modules);
+		return modules.includes(context as ContextModule)
+			? (context as ContextModule)
+			: null;
+	}
+
 	private resizeHandler = () => {
 		const container = this._canvasContainer;
 		if (!container) return;
@@ -274,7 +325,12 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		fitCameraToAspect(this._camera, width / height);
 
 		this.renderer.setSize(width, height);
-		this.emit(ThreeContextEvents.Resized, width, height);
+		this._emitIsolated(
+			ThreeContextEvents.Resized,
+			this._onListenerError,
+			width,
+			height
+		);
 		this.render();
 	};
 
@@ -294,8 +350,9 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		}
 
 		// Typed as perspective for the listeners' convenience, like `ctx.camera`.
-		this.emit(
+		this._emitIsolated(
 			ThreeContextEvents.CameraChanged,
+			this._onListenerError,
 			newCamera as THREE.PerspectiveCamera,
 			prevCamera as THREE.PerspectiveCamera
 		);
@@ -342,6 +399,13 @@ export enum ThreeContextEvents {
 	LoopRun = "looprun",
 	/** Fired when `starter.stopLoop()` halts the animation loop. */
 	LoopStop = "loopstop",
+	/**
+	 * Fired when user code throws: a lifecycle method of a behaviour or module, or a listener
+	 * of another ctx event. Carries the error, the behaviour/module (or `null`) and the method
+	 * or event name. The failed call is skipped, everything else keeps running. Without a
+	 * listener the error goes to `console.error`.
+	 */
+	Error = "error",
 }
 
 export type ThreeContextEventMap = {
@@ -357,4 +421,31 @@ export type ThreeContextEventMap = {
 	];
 	[ThreeContextEvents.LoopRun]: [];
 	[ThreeContextEvents.LoopStop]: [];
+	[ThreeContextEvents.Error]: [
+		error: unknown,
+		source: Object3DBehaviour | ContextModule | null,
+		hook: LifecycleHook | ThreeContextEvents,
+	];
 };
+
+/** Lifecycle methods three-start calls on an [`Object3DBehaviour`](/docs/api/object3d-behaviour) or a [`ContextModule`](/docs/api/context-module). */
+export type LifecycleHook =
+	| "onAwake"
+	| "onStart"
+	| "onEnable"
+	| "onDisable"
+	| "onDestroy"
+	| "onUpdate"
+	| "onBeforeRender"
+	| "onAfterRender";
+
+/** Per-frame events and the lifecycle method subscribed to each. */
+const FRAME_HOOKS: Partial<Record<ThreeContextEvents, LifecycleHook>> = {
+	[ThreeContextEvents.Update]: "onUpdate",
+	[ThreeContextEvents.RenderBefore]: "onBeforeRender",
+	[ThreeContextEvents.RenderAfter]: "onAfterRender",
+};
+
+/** An `Error` listener that throws is logged, never re-reported (no recursion). */
+const logErrorListenerFailure: ListenerErrorHandler = (error) =>
+	logError(error, null, ThreeContextEvents.Error);

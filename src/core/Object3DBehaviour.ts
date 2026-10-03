@@ -3,6 +3,7 @@ import type { Object3DExtension } from "./Object3DExtension";
 import { ThreeContextEvents, type ThreeContext } from "./ThreeContext";
 import type { ThreeStartModules } from "./ContextModule";
 import { TypedEmitter, type EventMap } from "./TypedEmitter";
+import { callHook } from "./utils/lifecycle-errors";
 
 const proto = () => Object3DBehaviour.prototype;
 
@@ -72,7 +73,8 @@ export abstract class Object3DBehaviour<
 
 	/**
 	 * @internal Called when object active + component enabled + context available.
-	 * Handles: awake (once) → enable → start (once) → subscribe.
+	 * Handles: awake (once) → enable → start (once) → subscribe. A hook that throws is
+	 * reported and the sequence goes on; one that deactivates the component stops it.
 	 */
 	_activate() {
 		if (this._isActive) return;
@@ -81,14 +83,17 @@ export abstract class Object3DBehaviour<
 
 		if (!this._awoken) {
 			this._awoken = true;
-			this.onAwake();
+			callHook(this, "onAwake");
+			if (!this._isActive) return;
 		}
 
-		this.onEnable();
+		callHook(this, "onEnable");
+		if (!this._isActive) return;
 
 		if (!this._started) {
 			this._started = true;
-			this.onStart();
+			callHook(this, "onStart");
+			if (!this._isActive) return;
 		}
 
 		this._subscribe();
@@ -103,7 +108,7 @@ export abstract class Object3DBehaviour<
 		this._isActive = false;
 
 		this._unsubscribe();
-		this.onDisable();
+		callHook(this, "onDisable");
 	}
 
 	/** @internal Subscribe to per-frame ctx events only if the method is overridden. */
@@ -139,7 +144,7 @@ export abstract class Object3DBehaviour<
 	 */
 	_destroy() {
 		this._deactivate();
-		this.onDestroy();
+		callHook(this, "onDestroy");
 		this._removeAllListeners();
 		this._object = null;
 		this._ext = null;

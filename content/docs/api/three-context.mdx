@@ -25,4 +25,8 @@ You don't construct `ThreeContext` directly — it's created automatically insid
 
 `ThreeContext` extends [`TypedEmitter`](/docs/api/typed-emitter) and acts as the central **event bus** of the runtime — subscribe via `ctx.on(...)`, unsubscribe via `ctx.off(...)`. Events are typed by `ThreeContextEventMap` below.
 
+<Callout type="info">
+  Listeners are isolated: one that throws (including the `onUpdate` / `onBeforeRender` / `onAfterRender` of components and modules, which are ctx listeners under the hood) is reported through `Error` and the remaining listeners still run. See [Errors in event methods](/docs/core-guides/lifecycle#errors-in-event-methods).
+</Callout>
+
 <ApiEvents data={doc} />

@@ -115,8 +115,11 @@ Common events:
 | `Mount` / `Unmount` | container / none | Canvas attached / detached. |
 | `LoopRun` / `LoopStop` | none | Animation loop started / stopped. |
 | `CameraChanged` | `newCamera, prevCamera` | `ctx.camera` or `ctx.ortho` was assigned. |
+| `Error` | `error, source, hook` | A component or module event method, or a ctx listener, threw. See [Errors in event methods](/docs/core-guides/lifecycle#errors-in-event-methods). |
 
 Full list with payload tuples is in the [API reference](/docs/api/three-context#events).
+
+Listeners are isolated from each other: one that throws is reported through `Error` (or `console.error` when nobody listens to it), and the rest of the listeners still run.
 
 Any subscription created inside a component's `onAwake` / `onEnable` should be undone in the matching `onDestroy` / `onDisable`. Modules don't have a destroy hook — listeners installed in `onAwake` live for the context's lifetime, which is what you usually want.
 

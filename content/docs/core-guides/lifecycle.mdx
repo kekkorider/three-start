@@ -142,6 +142,49 @@ Pass a component to [`destroy(comp)`](/docs/api/operations) to destroy it:
 
 Pass an `Object3D` to [`destroy(obj)`](/docs/api/operations) to destroy every component on `obj` and on its whole subtree. Order: scene-graph traversal (the object itself first, then each descendant), and on each object — components in the order they were added. After every component is destroyed, the object is removed from its parent.
 
+## Errors in event methods
+
+An event method that throws doesn't take anything else down. three-start catches the error, reports it, and carries on:
+
+- **Bootstrap keeps going.** A module whose `onAwake` throws doesn't stop `start()`: the other modules still awake and start, and every component still boots.
+- **The frame keeps going.** A throwing `onUpdate` skips only that one call. Every other module and component still gets `onUpdate`, `onBeforeRender` and `onAfterRender` in the same frame, and the scene still renders.
+- **The same goes for listeners.** A listener you subscribed with `ctx.on(...)` that throws is isolated the same way, for every `ThreeContextEvents` event.
+
+Each error fires [`ThreeContextEvents.Error`](/docs/api/three-context#events) with the error, the component or module that threw, and the method name:
+
+```ts
+import { ThreeContextEvents } from "three-start";
+
+starter.ctx.on(ThreeContextEvents.Error, (error, source, hook) => {
+  // source: the component or module, or null for a plain ctx.on(...) listener
+  // hook: "onAwake", "onUpdate", ... or the event name ("resized") for a listener
+  showErrorInUi(error, source, hook);
+});
+```
+
+Without an `Error` listener, the error goes to `console.error`. It is never swallowed.
+
+### What happens to the component
+
+Nothing. A component whose event method threw stays attached and enabled, and its lifecycle carries on as if the method had returned: if `onAwake` throws, `onEnable` and `onStart` still run, and `onUpdate` keeps being called every frame. If later methods depend on what the failed one set up, they will most likely throw too, every frame.
+
+To stop a faulty component, decide that in your `Error` listener:
+
+```ts
+starter.ctx.on(ThreeContextEvents.Error, (error, source) => {
+  if (source instanceof Object3DBehaviour) source.disable(); // [!code highlight]
+});
+```
+
+Disabling (or destroying) a component from the listener while it is activating stops the rest of the activation: after an `onAwake` that throws, followed by `disable()`, the component gets no `onEnable`, `onStart` or per-frame methods. Whether it gets `onDisable` depends on when it was activated:
+
+- **Added or enabled after `start()`**: it was already active when `onAwake` ran, so `disable()` calls `onDisable`.
+- **In the scene before `start()`**: its `onAwake` runs in the engine's awake pass, before any component is active, so `disable()` only clears the flag and `onDisable` doesn't run.
+
+<Callout type="warn">
+  Only synchronous code is covered. An error thrown later from a promise, `setTimeout`, or a DOM listener your component registered is not part of the lifecycle call and never reaches `Error`.
+</Callout>
+
 ## Cheat sheet
 
 | Hook | When | Component | Module |

@@ -2,6 +2,7 @@ import type * as THREE from "three/webgpu";
 import { ContextModule, type ThreeStartModules } from "./ContextModule";
 import { attachContext, getExtension, traverseActiveSelf } from "./Object3DExtension";
 import { ThreeContext, type ThreeStartCamera } from "./ThreeContext";
+import { callHook } from "./utils/lifecycle-errors";
 
 export interface ThreeStartOptions {
 	/** The Three.js renderer to use. Defaults to a `WebGPURenderer` with antialiasing. */
@@ -65,8 +66,9 @@ export class ThreeStart {
 
 		const moduleList = Object.values(this.ctx.modules) as ContextModule[];
 		for (const m of moduleList) m._ctx = this.ctx;
-		for (const m of moduleList) m.onAwake();
-		for (const m of moduleList) m.onStart();
+		// A throwing hook is reported via `ThreeContextEvents.Error`; the rest still boot.
+		for (const m of moduleList) callHook(m, "onAwake");
+		for (const m of moduleList) callHook(m, "onStart");
 		for (const m of moduleList) m._subscribe();
 
 		this.ctx._isBootstrapping = false;
@@ -84,7 +86,7 @@ export class ThreeStart {
 				if (!comp._ctx) comp._ctx = ext.context;
 				if (!comp._awoken) {
 					comp._awoken = true;
-					comp.onAwake();
+					callHook(comp, "onAwake");
 				}
 			}
 		});

@@ -93,8 +93,8 @@ attachContext(root, ctx)
 
 ctx._isBootstrapping = true      ← gate ON
   for m of modules: m._ctx = ctx
-  for m of modules: m.onAwake()
-  for m of modules: m.onStart()
+  for m of modules: callHook(m, "onAwake")    ← isolated, see "Error isolation"
+  for m of modules: callHook(m, "onStart")
   for m of modules: m._subscribe()
 ctx._isBootstrapping = false     ← gate OFF
 
@@ -150,15 +150,15 @@ Implemented in `Object3DBehaviour._activate()`:
 if already active: return
 if no ctx: return
 _isActive = true
-if !_awoken:  _awoken = true;  onAwake()
-onEnable()
-if !_started: _started = true; onStart()
+if !_awoken:  _awoken = true;  callHook(onAwake);  if !_isActive: return
+callHook(onEnable);                                if !_isActive: return
+if !_started: _started = true; callHook(onStart);  if !_isActive: return
 _subscribe()
 ```
 
-Subscription is last, so a component's per-frame method can never fire before its own `onStart`.
+Subscription is last, so a component's per-frame method can never fire before its own `onStart`. Each hook goes through `callHook` (see "Error isolation"). The `_isActive` re-checks stop the sequence when a hook — or an `Error` listener reacting to a throwing hook — disabled or destroyed the component mid-activation; without them the component would subscribe to per-frame events while disabled.
 
-`_deactivate()` calls `_unsubscribe()` + `onDisable()` and flips `_isActive = false`. `_destroy()` calls `_deactivate()`, then `onDestroy()`, then `_removeAllListeners()` on the inner emitter (provided by `TypedEmitter`), then nulls out back-pointers.
+`_deactivate()` calls `_unsubscribe()` + `callHook(onDisable)` and flips `_isActive = false`. `_destroy()` calls `_deactivate()`, then `callHook(onDestroy)`, then `_removeAllListeners()` on the inner emitter (provided by `TypedEmitter`), then nulls out back-pointers.
 
 ## Component construction and `addComponent` typing
 
@@ -399,6 +399,28 @@ Setting `ctx.camera` or `ctx.ortho` calls one private `setCamera(camera)`. Both 
 - Behaviour target: calls `ext.destroyComponent(comp)` (which splices from `components` + `_destroy`); falls back to `comp._destroy()` if no ext.
 - Object target: traverses the subtree destroying all components on every extension, then `removeFromParent()`. Extensions themselves are not unset — they stay on the detached `Object3D` and can be re-used if the object is re-added.
 
+## Error isolation
+
+User code never runs unguarded inside the core: one throwing hook or listener must not abort `start()` or the rest of a frame.
+
+| Call site | Mechanism |
+|---|---|
+| `onAwake` / `onStart` of modules (`start()` Phase 0), `onAwake` of components (Phase 1), `onEnable` / `onStart` / `onDisable` / `onDestroy` of components | `callHook(source, hook)` in `utils/lifecycle-errors.ts`: `try { source[hook]() } catch → report` |
+| `onUpdate` / `onBeforeRender` / `onAfterRender` of modules and components, and every user `ctx.on(...)` listener | They are all ctx listeners. `ThreeContext` fires every event through `TypedEmitter._emitIsolated`, which wraps each listener call in its own `try/catch` |
+
+Reporting goes through `ctx._reportError(error, source, hook)`: it fires `ThreeContextEvents.Error` with `[error, source, hook]`, or calls `console.error` when that event has no listeners. A component with no ctx yet (destroyed before it ever joined a started scene) logs directly. `Error` listeners are isolated too, but a throwing `Error` listener is only logged, never re-reported, so there is no recursion.
+
+Attribution of a throwing ctx listener (`ThreeContext._onListenerError`, error path only):
+
+- per-frame event + `context[hook] === fn` (the subscription `_subscribe` makes) → `source = context`, `hook = "onUpdate"` / `"onBeforeRender"` / `"onAfterRender"`;
+- otherwise `hook` is the event name, and `source` is the listener's `context` if that is a behaviour (`isObject3DBehaviour`) or a module registered on this ctx, else `null`.
+
+A component that threw keeps its state: it stays attached, enabled and subscribed. Disabling it is the `Error` listener's call.
+
+**Hot path.** `_emitIsolated` takes positional args (up to three, arity read from `arguments.length` without materializing it) and the error handler is one arrow field per ctx, so a frame dispatch allocates nothing per listener; the payload is only built when something throws. It walks eventemitter3's private `_events` storage (a single listener record or an array of them) with the same semantics as eventemitter3's own `emit`: length cached before the loop, `once` listeners removed before their call. This couples `TypedEmitter` to eventemitter3's internal layout, stable since v1; re-check it when bumping the peer dependency.
+
+Not covered: the render function itself (`ctx.render()`'s default pipeline or an `overrideRender` function), and asynchronous code started by a hook.
+
 ## TypedEmitter
 
 `TypedEmitter<T extends EventMap = {}>` is the base class behind every emitter in the core (`ThreeContext`, `ContextModule`, `Object3DBehaviour`).
@@ -410,6 +432,7 @@ Surface:
 - `off(event, fn?, context?, once?) → this` — public.
 - `emit(event, ...args) → boolean` — **`protected`**. Only the owning class fires its own events; external code physically cannot.
 - `_removeAllListeners()` — `@internal`, used by destroy paths.
+- `_emitIsolated(event, onError, a?, b?, c?) → boolean` — `@internal`, `protected`. `emit` with each listener isolated; see "Error isolation". `ThreeContext` fires all its events through it.
 
 Internals:
 
@@ -437,5 +460,6 @@ src/core/
 │   └── index.ts
 └── utils/
     ├── define-props.ts       defineProps, readOnly, notEnumer, createReadonlyView
+    ├── lifecycle-errors.ts   callHook (isolated lifecycle call) + console.error fallback
     └── assert-defined.ts
 ```

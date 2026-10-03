@@ -55,6 +55,10 @@ Lifecycle hooks you implement in your subclass.
   Per-frame hooks (`onUpdate`, `onBeforeRender`, `onAfterRender`) are subscribed to the runtime loop **only if you override them**. An empty module pays nothing for dispatch.
 </Callout>
 
+<Callout type="info">
+  A hook that throws doesn't stop other modules: the error is reported through [`ThreeContextEvents.Error`](/docs/api/three-context#events) (or `console.error`) and the module stays as it was. See [Errors in event methods](/docs/core-guides/lifecycle#errors-in-event-methods).
+</Callout>
+
 <ApiLifecycle data={doc} />
 
 ## Events

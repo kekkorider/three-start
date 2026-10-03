@@ -272,6 +272,30 @@
         "value": "loopstop",
         "args": [],
         "description": "Fired when `starter.stopLoop()` halts the animation loop."
+      },
+      {
+        "name": "Error",
+        "key": "ThreeContextEvents.Error",
+        "keyHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">ThreeContextEvents.Error</span>",
+        "value": "error",
+        "args": [
+          {
+            "name": "error",
+            "type": "unknown",
+            "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">unknown</span>"
+          },
+          {
+            "name": "source",
+            "type": "Object3DBehaviour | ContextModule | null",
+            "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">Object3DBehaviour </span><span style=\"--shiki-light:#D73A49;--shiki-dark:#F97583\">|</span><span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\"> ContextModule </span><span style=\"--shiki-light:#D73A49;--shiki-dark:#F97583\">|</span><span style=\"--shiki-light:#005CC5;--shiki-dark:#79B8FF\"> null</span>"
+          },
+          {
+            "name": "hook",
+            "type": "LifecycleHook | ThreeContextEvents",
+            "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">LifecycleHook </span><span style=\"--shiki-light:#D73A49;--shiki-dark:#F97583\">|</span><span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\"> ThreeContextEvents</span>"
+          }
+        ],
+        "description": "Fired when user code throws: a lifecycle method of a behaviour or module, or a listener\nof another ctx event. Carries the error, the behaviour/module (or `null`) and the method\nor event name. The failed call is skipped, everything else keeps running. Without a\nlistener the error goes to `console.error`."
       }
     ]
   },
