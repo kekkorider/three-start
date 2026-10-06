@@ -10,9 +10,9 @@ import { logError } from "./utils/lifecycle-errors";
 // three-start
 
 /**
- * The shared runtime of a scene — renderer, camera, animation loop, timer, render pipeline,
- * event bus, and [`ContextModule`](/docs/api/context-module) registry. Created and owned
- * by [`ThreeStart`](/docs/api/three-start); exposed to every
+ * The shared runtime of a [`ThreeStart`](/docs/api/three-start) instance — renderer,
+ * active scene, camera, animation loop, timer, render pipeline, event bus, and
+ * [`ContextModule`](/docs/api/context-module) registry. Exposed to every
  * [`Object3DBehaviour`](/docs/api/object3d-behaviour) and module as `this.ctx`.
  */
 export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
@@ -21,13 +21,19 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 	/** The Three.js renderer owned by this context. Sealed at construction. */
 	public readonly renderer!: THREE.Renderer;
 
-	/** The root `Scene` that components and the camera live in. Sealed at construction. */
-	public readonly scene!: THREE.Scene;
+	/**
+	 * The scene currently being rendered. Always the active scene of the owning
+	 * [`ThreeStart`](/docs/api/three-start). Reassigning throws — switch with
+	 * [`setScene`](/docs/api/three-start).
+	 */
+	get scene(): THREE.Scene {
+		return this._scene;
+	}
 
 	/** The render pipeline used by the default render function. Sealed at construction. */
 	public readonly renderPipeline!: THREE.RenderPipeline;
 
-	/** The scene pass node fed into `renderPipeline`. Attach post-processing effects to it via TSL. */
+	/** The scene pass node fed into `renderPipeline`. Bound to the active scene and camera; attach post-processing effects to it via TSL. */
 	public readonly scenePass!: THREE.PassNode;
 
 	/** Registered [`ContextModule`](/docs/api/context-module) instances, keyed by name. Read-only at runtime — mutations throw. Populate via `starter.addModules()` before `start()`. */
@@ -38,8 +44,10 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 
 	/**
 	 * The active camera, typed as perspective for the common case. Reassigning it swaps the
-	 * camera used by the scene pass and fires `CameraChanged`. If an orthographic camera is
-	 * active, this returns it too: check `isOrtho` and use `ortho` in orthographic scenes.
+	 * camera used by the active scene's pass and fires `CameraChanged`. Each registered scene
+	 * keeps its own camera — this assignment updates only the scene currently in `scene`.
+	 * If an orthographic camera is active, this returns it too: check `isOrtho` and use
+	 * `ortho` in orthographic scenes.
 	 */
 	public get camera(): THREE.PerspectiveCamera {
 		return this._camera as THREE.PerspectiveCamera;
@@ -85,7 +93,10 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 	_isBootstrapping = false;
 
 	private readonly _timer: THREE.Timer;
+	private _scene: THREE.Scene;
 	private _camera: ThreeStartCamera;
+	/** Per-scene camera. The active scene's entry is kept in sync by `setCamera`. */
+	private readonly _sceneCameras = new Map<THREE.Scene, ThreeStartCamera>();
 	private _canvasContainer: HTMLDivElement | null = null;
 	private _resizeObserver: ResizeObserver | null = null;
 	private _isMounted = false;
@@ -121,19 +132,19 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 			renderer.init();
 		}
 		this._timer = new THREE.Timer();
-		const scene = options.scene ?? new THREE.Scene();
+		this._scene = options.scene ?? new THREE.Scene();
 		this._camera = options.camera ?? new THREE.PerspectiveCamera();
 		if (!this._camera.parent) {
-			scene.add(this._camera);
+			this._scene.add(this._camera);
 		}
-		const scenePass = pass(scene, this._camera);
+		this._sceneCameras.set(this._scene, this._camera);
+		const scenePass = pass(this._scene, this._camera);
 		const renderPipeline = new THREE.RenderPipeline(renderer, scenePass);
 
 		defineProps(this, {
 			isThreeContext: readOnly(true),
 			modules: readOnly(createReadonlyView(this._modules, "ctx.modules")),
 			renderer: readOnly(renderer),
-			scene: readOnly(scene),
 			scenePass: readOnly(scenePass),
 			renderPipeline: readOnly(renderPipeline),
 		});
@@ -144,6 +155,68 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		if (this._modules[key]) return false;
 		this._modules[key] = instance;
 		return true;
+	}
+
+	/** @internal Record a scene's camera. Called by `ThreeStart.addScene()`. */
+	_registerScene(scene: THREE.Scene, camera: ThreeStartCamera): void {
+		this._sceneCameras.set(scene, camera);
+	}
+
+	/** @internal Camera last associated with `scene` via `addScene` or `ctx.camera =`. */
+	_cameraForScene(scene: THREE.Scene): ThreeStartCamera | undefined {
+		return this._sceneCameras.get(scene);
+	}
+
+	/** @internal Scene that already owns `camera`, if any. */
+	_sceneForCamera(camera: ThreeStartCamera): THREE.Scene | undefined {
+		for (const [scene, cam] of this._sceneCameras) {
+			if (cam === camera) return scene;
+		}
+		return undefined;
+	}
+
+	/**
+	 * @internal Point the render pipeline at `scene` / `camera`. Does not fire events
+	 * or render — `ThreeStart.setScene()` does that after lifecycle.
+	 */
+	_bindScene(scene: THREE.Scene, camera: ThreeStartCamera): void {
+		this._scene = scene;
+		this._camera = camera;
+		this.scenePass.scene = scene;
+		this.scenePass.camera = camera;
+		if (!camera.parent) scene.add(camera);
+
+		const root = this._canvasContainer;
+		if (root) {
+			fitCameraToAspect(camera, root.offsetWidth / root.offsetHeight);
+		} else {
+			camera.updateProjectionMatrix();
+		}
+	}
+
+	/**
+	 * @internal `CameraChanged` then `SceneChanged`, then a redraw. Called by
+	 * `ThreeStart.setScene()` after the new scene's components are running.
+	 */
+	_notifySceneChanged(
+		newScene: THREE.Scene,
+		prevScene: THREE.Scene,
+		newCamera: ThreeStartCamera,
+		prevCamera: ThreeStartCamera
+	): void {
+		this._emitIsolated(
+			ThreeContextEvents.CameraChanged,
+			this._onListenerError,
+			newCamera as THREE.PerspectiveCamera,
+			prevCamera as THREE.PerspectiveCamera
+		);
+		this._emitIsolated(
+			ThreeContextEvents.SceneChanged,
+			this._onListenerError,
+			newScene,
+			prevScene
+		);
+		this.render();
 	}
 
 	/**
@@ -337,6 +410,7 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 	private setCamera(newCamera: ThreeStartCamera) {
 		const prevCamera = this._camera;
 		this._camera = newCamera;
+		this._sceneCameras.set(this._scene, newCamera);
 		// Rebind the scene pass to the new camera so the render pipeline picks it up.
 		this.scenePass.camera = newCamera;
 		// Attach to the scene if the camera is floating (matches constructor behaviour).
@@ -391,8 +465,10 @@ export enum ThreeContextEvents {
 	Mount = "mount",
 	/** Fired when `starter.unmount()` runs. */
 	Unmount = "unmount",
-	/** Fired when `ctx.camera` is reassigned. Carries the new and previous cameras. */
+	/** Fired when `ctx.camera` is reassigned, including when `starter.setScene()` restores a scene's camera. Carries the new and previous cameras. */
 	CameraChanged = "camerachanged",
+	/** Fired when `starter.setScene()` switches the active scene. Carries the new and previous scenes. */
+	SceneChanged = "scenechanged",
 	/** Fired when the canvas container resizes (and once on first mount). Carries the new pixel dimensions. */
 	Resized = "resized",
 	/** Fired when `starter.runLoop()` starts the animation loop. */
@@ -418,6 +494,10 @@ export type ThreeContextEventMap = {
 	[ThreeContextEvents.CameraChanged]: [
 		newCamera: THREE.PerspectiveCamera,
 		prevCamera: THREE.PerspectiveCamera,
+	];
+	[ThreeContextEvents.SceneChanged]: [
+		newScene: THREE.Scene,
+		prevScene: THREE.Scene,
 	];
 	[ThreeContextEvents.LoopRun]: [];
 	[ThreeContextEvents.LoopStop]: [];

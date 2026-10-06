@@ -7,8 +7,8 @@ description: Technical reference for maintainers/contributors. Covers state, lif
 
 | Entity | Location | Role |
 |---|---|---|
-| `ThreeStart` | `ThreeStart.ts` | Orchestrator. Owns the single `ThreeContext`. Owns lifecycle (mount/runLoop/stopLoop/unmount/dispose). Owns module registration and the `start()` bootstrap. |
-| `ThreeContext` | `ThreeContext.ts` | Per-scene runtime: renderer, scene, camera, timer, render pipeline, event bus (extends `TypedEmitter`), modules registry. Exposed to behaviours/modules via `this.ctx`. Lifecycle methods (`mount`/`unmount`/`runLoop`/`stopLoop`/`dispose`) are `@internal` — only called by `ThreeStart` wrappers. |
+| `ThreeStart` | `ThreeStart.ts` | Orchestrator. Owns the single `ThreeContext`. Owns the scene registry (`addScene` / `setScene` / `scenes`). Owns lifecycle (mount/runLoop/stopLoop/unmount/dispose). Owns module registration and the `start()` bootstrap. |
+| `ThreeContext` | `ThreeContext.ts` | Per-instance runtime: renderer, active scene, camera, timer, render pipeline, event bus (extends `TypedEmitter`), modules registry, per-scene camera map. Exposed to behaviours/modules via `this.ctx`. Lifecycle methods (`mount`/`unmount`/`runLoop`/`stopLoop`/`dispose`) are `@internal` — only called by `ThreeStart` wrappers. Scene switching is public on `ThreeStart`, internal on ctx (`_bindScene` / `_notifySceneChanged`). |
 | `Object3DExtension` | `Object3DExtension.ts` | Per-`Object3D` sidecar: list of attached `Object3DBehaviour`s, cached `ThreeContext` pointer, own active flag (`activeSelf`), `activeInHierarchy` getter, cascade traversal helpers. |
 | `Object3DBehaviour` | `Object3DBehaviour.ts` | User-defined component attached to an `Object3D`. Has full lifecycle. |
 | `ContextModule` | `ContextModule.ts` | User-defined global singleton attached to the context. Has a subset of lifecycle. |
@@ -19,13 +19,13 @@ description: Technical reference for maintainers/contributors. Covers state, lif
 
 - Stored on the Three.js `Object3D` under the non-enumerable symbol `EXT = Symbol.for("three-start:ext")`.
 - Created lazily by `ensureExtension(obj)`. Read by `getExtension(obj)` (returns `null` if missing).
-- `attachContext(obj, ctx)` calls `ensureExtension(obj)` and assigns `ext.context = ctx`. In normal flow this is done exactly once on the scene root by `ThreeStart.start()`.
+- `attachContext(obj, ctx)` calls `ensureExtension(obj)` and assigns `ext.context = ctx`. In normal flow this is done on each scene root the first time that scene is bootstrapped — the active scene during `ThreeStart.start()`, and any other registered scene on its first `setScene` after `start()`.
 
 ## Context resolution
 
-`Object3DExtension.resolveContext()` walks up the `.parent` chain looking for the first ancestor whose extension has `.context` set, caches the result on `this.context`, and returns it. A component inside the scene therefore shares the context of whatever ancestor has it attached — in practice the scene root, after `ThreeStart.start()` has run.
+`Object3DExtension.resolveContext()` walks up the `.parent` chain looking for the first ancestor whose extension has `.context` set, caches the result on `this.context`, and returns it. A component inside a scene therefore shares the context of whatever ancestor has it attached — in practice that scene's root, after that scene has been bootstrapped.
 
-A component whose object is not yet in a hierarchy with an attached context has `resolveContext() === null`. It is stored on the extension but remains dormant (no `_ctx`, no `_activate` call) until the object joins such a hierarchy.
+A component whose object is not yet in a hierarchy with an attached context has `resolveContext() === null`. It is stored on the extension but remains dormant (no `_ctx`, no `_activate` call) until the object joins such a hierarchy. Objects in a registered scene that is not currently active also stay dormant: that scene root's `_isCurrentScene === false` makes `activeInHierarchy` false for the whole tree.
 
 ## Component state flags
 
@@ -47,8 +47,9 @@ A component whose object is not yet in a hierarchy with an attached context has 
 | `components` | Array of `Object3DBehaviour`s in insertion order. |
 | `context` | The `ThreeContext` this subtree is bound to, or `null` if unresolved. |
 | `_active` | The object's own active flag. Default `true`. Toggled via `setActive(active)`. Whether components actually run depends on the full chain — see `activeInHierarchy` below and the [Cascade algorithm](#cascade-algorithm). |
+| `_isCurrentScene` | `@internal`. Default `true`. Set to `false` only on a registered scene root that is not the active scene. A background scene is treated as an inactive ancestor. |
 | `activeSelf` getter | Reads `_active`. Public accessor for the own flag. |
-| `activeInHierarchy` getter | `_active` AND every ancestor's `activeSelf` is true. Computed via `parentChainActive(this.object)` walk. |
+| `activeInHierarchy` getter | `_active` AND `_isCurrentScene` AND every ancestor's `activeSelf` and `_isCurrentScene` are true. Computed via `parentChainActive(this.object)` walk plus the two flags on self. |
 
 ## Context state
 
@@ -58,7 +59,7 @@ A component whose object is not yet in a hierarchy with an attached context has 
 - `_modules: Record<string, ContextModule>` — the actual mutable backing store for registered modules. Only `_registerModule(key, instance)` writes to it.
 - `_renderFn / _srcRenderFn` — the current render function and the original. `overrideRender(fn)` swaps `_renderFn`; `resetRender()` restores from `_srcRenderFn`.
 - `_timer: THREE.Timer` — drives `getDeltaTime` / `getTime` / `getTimescale` / `setTimescale`. Connected to `document` and reset on `runLoop`, disconnected on `stopLoop`. Resetting on start keeps a stopped period out of the first `getDeltaTime()`; that first tick reads `performance.now()` instead of the rAF timestamp, which may predate the reset.
-- `_camera`, `_canvasContainer`, `_resizeObserver`, `_isMounted`, `_isLoopRunning` — backing state for the corresponding getters / lifecycle methods.
+- `_camera`, `_scene`, `_sceneCameras`, `_canvasContainer`, `_resizeObserver`, `_isMounted`, `_isLoopRunning` — backing state for the corresponding getters / lifecycle methods. `_sceneCameras` is a `Map<Scene, Camera>` kept in sync by `addScene` (`_registerScene`) and `setCamera`.
 
 ## Sealed runtime fields
 
@@ -66,9 +67,11 @@ A component whose object is not yet in a hierarchy with an attached context has 
 
 - `isThreeContext` (discriminator marker)
 - `modules` (the Proxy view, see below)
-- `renderer`, `scene`, `scenePass`, `renderPipeline`
+- `renderer`, `scenePass`, `renderPipeline`
 
-Result: `ctx.scene = otherScene`, `ctx.renderer = fake`, `ctx.modules = {}` all throw `TypeError`. This is hard runtime protection against third-party module/component code rebinding core context state. The TS `readonly` modifier alone is bypassable via `as any`; `defineProperty(..., { writable: false, configurable: false })` is not.
+`ctx.scene` is a getter over `_scene` (no setter) so it can follow `setScene`. Assignment (`ctx.scene = other`) is a compile error and a runtime `TypeError` in strict mode.
+
+Result: `ctx.scene = otherScene`, `ctx.renderer = fake`, `ctx.modules = {}` all throw `TypeError`. This is hard runtime protection against third-party module/component code rebinding core context state. The TS `readonly` modifier alone is bypassable via `as any`; `defineProperty(..., { writable: false, configurable: false })` is not. `starter.scenes` uses the same `createReadonlyView` Proxy as `ctx.modules`.
 
 ## Modules registry — read-only Proxy view
 
@@ -87,7 +90,7 @@ Threat model: third-party plugin code might try `ctx.modules.foo = bar` (typo, m
 
 ## `ThreeStart.start()` phases
 
-A single idempotent call, guarded by `this._started`.
+A single idempotent call, guarded by `this._started`. `root` is `ctx.scene` at that moment (the constructor scene unless `setScene` already ran). Other registered scenes are not visited here.
 
 ```
 attachContext(root, ctx)
@@ -106,7 +109,10 @@ Phase 2 (traverseActiveSelf): for every component on every active-in-hierarchy o
   if enabled: comp._activate()
 
 listenForChildren(root)          ← wire childadded for dynamic additions
+_bootstrapped.add(root)
 ```
+
+A later `setScene` on a scene that is not in `_bootstrapped` runs `bootstrapScene`: `attachContext`, the same Phase 1/2, `listenForChildren`. Modules are not re-awoken. The `_isBootstrapping` gate stays off — modules already sit first in the listener list.
 
 ## Bootstrap gate
 
@@ -192,14 +198,16 @@ Behaviour:
 `Object3DExtension.addComponent` activates immediately iff **all** are true:
 
 1. `component._ctx` resolved (object is in a hierarchy with attached ctx)
-2. `ext.activeInHierarchy` (the extension's own flag is true AND no ancestor was `setActive(false)`'d)
+2. `ext.activeInHierarchy` (the extension's own flag is true AND no ancestor was `setActive(false)`'d AND the object's scene is the active scene)
 3. `component.enabled`
 4. `!ctx._isBootstrapping` (not inside `ThreeStart.start()` Phase 0)
 
 If any condition fails, the component is still appended to `ext.components`. It will be activated later by:
 
-- Phase 2 of `start()` — when bootstrap finishes.
-- `childadded` flow — when the object joins a hierarchy with ctx (see below).
+- Phase 2 of `start()` — when bootstrap finishes (active scene only).
+- First `setScene` after `start()` for a scene that was not yet bootstrapped — same Phase 1/2 as `start()`.
+- Subsequent `setScene` back to a bootstrapped scene — `activateSubtree`.
+- `childadded` flow — when the object joins a hierarchy with ctx (see below). Background scenes still have `activeInHierarchy === false`, so `bootstrapNode` returns early.
 - `ext.setActive(true)` — if the extension was inactive (or an ancestor's cascade reaches the object).
 - `comp.enable()` — if the component was disabled.
 
@@ -237,9 +245,10 @@ This was a deliberate change from an earlier design that overrode `Object3D.prot
 
 Helpers exported from `Object3DExtension.ts` (all `@internal`):
 
-- `parentChainActive(obj)` — walks `obj.parent` up to the scene root; returns `false` if any ancestor's `activeSelf` is `false`. Ancestors with no extension count as active. `obj` itself is **not** checked.
-- `isActiveInHierarchy(obj)` — combines `getExtension(obj)?.activeSelf ?? true` with `parentChainActive(obj)`.
+- `parentChainActive(obj)` — walks `obj.parent` up to the scene root; returns `false` if any ancestor's `activeSelf` is `false` or `_isCurrentScene` is `false`. Ancestors with no extension count as active. `obj` itself is **not** checked.
+- `isActiveInHierarchy(obj)` — own `activeSelf` and `_isCurrentScene` (when an extension exists) plus `parentChainActive(obj)`.
 - `traverseActiveSelf(root, cb)` — walks `root` and descendants, invokes `cb` on each node whose own `activeSelf` is true (or that has no extension), pruning at any inactive node. Caller must guarantee `root`'s parent chain is active.
+- `activateSubtree` / `deactivateSubtree` — used by `setActive` and by `ThreeStart.setScene`.
 
 `Object3DExtension.setActive(active)` algorithm:
 
@@ -248,6 +257,7 @@ if (this._active === active) return;             ← idempotence
 this._active = active;
 
 if (!parentChainActive(this.object)) return;     ← chain wasn't active, nothing to cascade
+if (!this._isCurrentScene) return;               ← background scene root, same
 
 if (active) activateSubtree(this.object);
 else        deactivateSubtree(this.object);
@@ -255,7 +265,7 @@ else        deactivateSubtree(this.object);
 
 The chain check is the key invariant: if any ancestor was already inactive, this object's effective state didn't change (it was inactive before the flip, it's inactive after) — so no components need to be (de)activated. The flag is recorded on `_active`; the cascade fires only when crossing the effective-state boundary.
 
-`activateSubtree(root)` and `deactivateSubtree(root)` (private to `Object3DExtension.ts`):
+`activateSubtree(root)` and `deactivateSubtree(root)` (`@internal`, exported from `Object3DExtension.ts`):
 
 ```
 activateSubtree(root):
@@ -371,23 +381,45 @@ The core has two latent type-level cycles, both kept harmless by `import type`:
 | `stopLoop()` | `ctx.stopLoop()` | Disconnect timer, set animation loop `null`, emit `LoopStop`. |
 | `dispose()` | `ctx.dispose()` | Tear down: unmount, stopLoop, dispose renderer + timer, removeAllListeners. |
 
-This split exists to enforce a clean access boundary: third-party components/modules holding `this.ctx` cannot call `mount`/`runLoop`/etc. by accident or design — the type system simply doesn't expose them. The ThreeStart wrappers are thin: each just forwards to the corresponding `ctx` method. These are imperative lifecycle commands, so they return `void` (only the setup methods `addModules()` and `start()` return `this` for chaining).
+This split exists to enforce a clean access boundary: third-party components/modules holding `this.ctx` cannot call `mount`/`runLoop`/etc. by accident or design — the type system simply doesn't expose them. The ThreeStart wrappers are thin: each just forwards to the corresponding `ctx` method. These are imperative lifecycle commands, so they return `void` (`addModules()`, `start()`, and `setScene()` return `this` for chaining; `addScene()` returns the scene).
 
 ## Camera swap mechanics
 
 Setting `ctx.camera` or `ctx.ortho` calls one private `setCamera(camera)`. Both accessors read and write the same `_camera: PerspectiveCamera | OrthographicCamera` and only cast it to their type; `ctx.isOrtho` tells which kind is actually active. `setCamera`:
 
-1. Reassigns `this.scenePass.camera = newCamera` — the render pipeline reads `scenePass.camera` per frame, so this is what actually swaps the rendered viewpoint.
-2. If `newCamera.parent === null`, calls `this.scene.add(newCamera)` — matches the constructor behaviour for a floating default camera.
-3. Fits the camera to the container's aspect (`fitCameraToAspect`: perspective → `aspect`; orthographic → `left`/`right` around the horizontal center, keeping `top`/`bottom`) and calls `updateProjectionMatrix()`. The resize handler uses the same function.
-4. Emits `CameraChanged` with `[newCamera, prevCamera]`.
-5. Calls `render()` to redraw immediately.
+1. Stores the camera on `_sceneCameras` for the active scene.
+2. Reassigns `this.scenePass.camera = newCamera` — the render pipeline reads `scenePass.camera` per frame, so this is what actually swaps the rendered viewpoint.
+3. If `newCamera.parent === null`, calls `this.scene.add(newCamera)` — matches the constructor behaviour for a floating default camera.
+4. Fits the camera to the container's aspect (`fitCameraToAspect`: perspective → `aspect`; orthographic → `left`/`right` around the horizontal center, keeping `top`/`bottom`) and calls `updateProjectionMatrix()`. The resize handler uses the same function.
+5. Emits `CameraChanged` with `[newCamera, prevCamera]`.
+6. Calls `render()` to redraw immediately.
 
-`PassNode.camera` is a plain instance field read each frame — direct assignment is sufficient, no need to rebuild `scenePass` / `renderPipeline` (both are sealed via `defineProps + readOnly` so couldn't be replaced anyway).
+`PassNode.camera` (and `PassNode.scene`) are plain instance fields read each frame — direct assignment is sufficient, no need to rebuild `scenePass` / `renderPipeline` (both are sealed via `defineProps + readOnly` so couldn't be replaced anyway).
+
+## Scene swap mechanics
+
+`ThreeStart` owns `_scenes` (insertion order, index 0 = constructor scene) and `_bootstrapped`. `ThreeContext` owns `_scene` and `_sceneCameras`. Public API is `addScene` / `setScene` / `scenes` on the starter.
+
+`addScene(scene?, camera?)`:
+
+1. Same scene already in `_scenes`, or same camera already in `_sceneCameras` → `console.warn`, return the existing scene.
+2. Otherwise create defaults (`new Scene()`, `new PerspectiveCamera()`), parent a floating camera onto its scene, push onto `_scenes`, `_registerScene` on ctx, `ensureExtension(scene)._isCurrentScene = false`.
+
+`setScene(scene)`:
+
+1. Same as `ctx.scene` → no-op. Not in `_scenes` → throw.
+2. `prevExt._isCurrentScene = false`, then `deactivateSubtree(prev)` — `onDisable` on running components. Does not touch `activeSelf` or `visible`.
+3. `ctx._bindScene(scene, camera)` — `_scene` / `_camera`, `scenePass.scene` / `scenePass.camera`, fit aspect.
+4. `nextExt._isCurrentScene = true`.
+5. If `start()` has run: first visit → `bootstrapScene` (attachContext + Phase 1/2 + listenForChildren); already in `_bootstrapped` → `activateSubtree`.
+6. `ctx._notifySceneChanged` — `CameraChanged`, then `SceneChanged`, then `render()`.
+
+`setScene` before `start()` only rebinds and flips `_isCurrentScene`. `start()` then bootstraps whichever scene is active.
 
 ## Idempotence and invariants
 
 - `ThreeStart.start()` is idempotent: second call is a no-op (`this._started` guard).
+- `ThreeStart.setScene(scene)` with `scene === ctx.scene` is a no-op.
 - `ensureExtension(obj)` is idempotent: returns the existing extension if present.
 - `attachContext(obj, ctx)` overwrites `ext.context` (no guard). Multiple attaches are a user error but not blocked.
 - `ext.setActive(v)` with `v === ext._active` is a no-op.

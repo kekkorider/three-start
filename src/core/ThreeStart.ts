@@ -1,7 +1,15 @@
-import type * as THREE from "three/webgpu";
-import { ContextModule, type ThreeStartModules } from "./ContextModule";
-import { attachContext, getExtension, traverseActiveSelf } from "./Object3DExtension";
+import * as THREE from "three/webgpu";
+import type { ContextModule, ThreeStartModules } from "./ContextModule";
+import {
+	activateSubtree,
+	attachContext,
+	deactivateSubtree,
+	ensureExtension,
+	getExtension,
+	traverseActiveSelf,
+} from "./Object3DExtension";
 import { ThreeContext, type ThreeStartCamera } from "./ThreeContext";
+import { createReadonlyView, defineProps, readOnly } from "./utils/define-props";
 import { callHook } from "./utils/lifecycle-errors";
 
 export interface ThreeStartOptions {
@@ -26,32 +34,118 @@ export interface ThreeStartOptions {
 
 /**
  * Entry point of every three-start project. Owns a single [`ThreeContext`](/docs/api/three-context),
- * registers modules, controls lifecycle (mount / loop / dispose), and bootstraps the scene on `start()`.
+ * registers modules and extra scenes, controls lifecycle (mount / loop / dispose), and bootstraps
+ * the active scene on `start()`. Switch scenes with [`setScene`](/docs/api/three-start).
  */
 export class ThreeStart {
 	/** The shared [`ThreeContext`](/docs/api/three-context) runtime (renderer, scene, camera, modules, events). Created in the constructor. */
 	readonly ctx: ThreeContext;
+
+	/**
+	 * Registered scenes, in insertion order. Index `0` is the constructor scene.
+	 * Read-only at runtime — mutations throw. Populate via `addScene()`.
+	 */
+	readonly scenes!: THREE.Scene[];
 
 	/** `true` once `start()` has been called. After this, modules can no longer be registered. */
 	public get isStarted() {
 		return this._started;
 	}
 
-	private readonly _root: THREE.Object3D;
+	private readonly _scenes: THREE.Scene[] = [];
+	private readonly _bootstrapped = new Set<THREE.Scene>();
 	private _started = false;
 
 	constructor(options: ThreeStartOptions = {}) {
 		this.ctx = new ThreeContext(options);
-		this._root = this.ctx.scene;
+		this._scenes.push(this.ctx.scene);
+		ensureExtension(this.ctx.scene)._isCurrentScene = true;
+		defineProps(this, {
+			scenes: readOnly(createReadonlyView(this._scenes, "starter.scenes")),
+		});
 		// Context is NOT attached here — wait for start() so components
 		// added before start() don't activate prematurely.
 	}
 
 	/**
-	 * Bootstrap the scene: awaken registered [`ContextModule`](/docs/api/context-module)s, attach
+	 * Register another `THREE.Scene` (and the camera it renders with). The constructor
+	 * scene is already registered. Omitted `scene` creates an empty one; omitted `camera`
+	 * creates a `PerspectiveCamera` and adds it to the scene when it has no parent.
+	 *
+	 * Adding a scene or camera that is already registered warns and returns the existing
+	 * scene. The new scene is not shown until [`setScene`](/docs/api/three-start).
+	 */
+	addScene(scene?: THREE.Scene, camera?: ThreeStartCamera): THREE.Scene {
+		if (scene && this._scenes.includes(scene)) {
+			console.warn(`[ThreeStart] Scene is already registered — skipping.`);
+			return scene;
+		}
+		if (camera) {
+			const existing = this.ctx._sceneForCamera(camera);
+			if (existing) {
+				console.warn(`[ThreeStart] Camera is already registered — skipping.`);
+				return existing;
+			}
+		}
+
+		const next = scene ?? new THREE.Scene();
+		const nextCamera = camera ?? new THREE.PerspectiveCamera();
+		if (!nextCamera.parent) next.add(nextCamera);
+
+		this._scenes.push(next);
+		this.ctx._registerScene(next, nextCamera);
+		ensureExtension(next)._isCurrentScene = false;
+		return next;
+	}
+
+	/**
+	 * Make `scene` the one [`ctx.scene`](/docs/api/three-context) / [`ctx.camera`](/docs/api/three-context)
+	 * point at, and the one the renderer draws. Same scene is a no-op. A scene that was
+	 * never passed to [`addScene`](/docs/api/three-start) throws.
+	 *
+	 * Components on the previous scene receive `onDisable` and pause; components on the
+	 * new scene resume (`onEnable`) or, the first time after `start()`, run the full
+	 * bootstrap. [`ContextModule`](/docs/api/context-module)s keep running.
+	 */
+	setScene(scene: THREE.Scene): this {
+		const prevScene = this.ctx.scene;
+		if (scene === prevScene) return this;
+		if (!this._scenes.includes(scene)) {
+			throw new Error(
+				`[ThreeStart] Scene is not registered. Add it with addScene() first.`
+			);
+		}
+
+		const prevCamera = this.ctx._cameraForScene(prevScene) ?? this.ctx.camera;
+		const nextCamera = this.ctx._cameraForScene(scene);
+		if (!nextCamera) {
+			throw new Error(`[ThreeStart] Scene has no camera. Add it with addScene().`);
+		}
+
+		ensureExtension(prevScene)._isCurrentScene = false;
+		deactivateSubtree(prevScene);
+
+		this.ctx._bindScene(scene, nextCamera);
+		ensureExtension(scene)._isCurrentScene = true;
+
+		if (this._started) {
+			if (!this._bootstrapped.has(scene)) {
+				this.bootstrapScene(scene);
+			} else {
+				activateSubtree(scene);
+			}
+		}
+
+		this.ctx._notifySceneChanged(scene, prevScene, nextCamera, prevCamera);
+		return this;
+	}
+
+	/**
+	 * Bootstrap the active scene: awaken registered [`ContextModule`](/docs/api/context-module)s, attach
 	 * the context to the scene graph, and activate [`Object3DBehaviour`](/docs/api/object3d-behaviour)
-	 * instances on every existing object. After `start()`, any objects added to the scene get
-	 * bootstrapped automatically.
+	 * instances on every existing object. After `start()`, any objects added to the active scene get
+	 * bootstrapped automatically. Other registered scenes wait until the first [`setScene`](/docs/api/three-start)
+	 * that shows them.
 	 *
 	 * No more modules can be registered after this call.
 	 */
@@ -59,7 +153,8 @@ export class ThreeStart {
 		if (this._started) return this;
 		this._started = true;
 
-		attachContext(this._root, this.ctx);
+		const root = this.ctx.scene;
+		attachContext(root, this.ctx);
 
 		// Phase 0: bootstrap modules with component activation gated off.
 		this.ctx._isBootstrapping = true;
@@ -73,38 +168,9 @@ export class ThreeStart {
 
 		this.ctx._isBootstrapping = false;
 
-		// Phase 1: Awake all components on effectively-active objects.
-		// `traverseActiveSelf` prunes any subtree whose root has `activeSelf === false`,
-		// so a `setActive(parent, false)` call before `start()` keeps the whole subtree dormant.
-		traverseActiveSelf(this._root, (node) => {
-			const ext = getExtension(node);
-			if (!ext) return;
-			if (!ext.context) ext.resolveContext();
-			if (!ext.context) return;
-
-			for (const comp of ext.components) {
-				if (!comp._ctx) comp._ctx = ext.context;
-				if (!comp._awoken) {
-					comp._awoken = true;
-					callHook(comp, "onAwake");
-				}
-			}
-		});
-
-		// Phase 2: Enable + Start + Subscribe for enabled components on the same set.
-		traverseActiveSelf(this._root, (node) => {
-			const ext = getExtension(node);
-			if (!ext) return;
-
-			for (const comp of ext.components) {
-				if (comp.enabled) {
-					comp._activate(); // skips awake since already done in phase 1
-				}
-			}
-		});
-
-		// Listen for future children added anywhere in the hierarchy
-		this.listenForChildren(this._root);
+		this.awakenAndActivate(root);
+		this.listenForChildren(root);
+		this._bootstrapped.add(root);
 
 		return this;
 	}
@@ -158,6 +224,50 @@ export class ThreeStart {
 	/** Tear everything down: unmount, stop loop, dispose renderer and timer. */
 	dispose(): void {
 		this.ctx.dispose();
+	}
+
+	/**
+	 * First-time bootstrap of a scene shown after `start()`: attach context, run the
+	 * same awake / enable passes as `start()`, then listen for `childadded`.
+	 */
+	private bootstrapScene(scene: THREE.Scene) {
+		attachContext(scene, this.ctx);
+		this.awakenAndActivate(scene);
+		this.listenForChildren(scene);
+		this._bootstrapped.add(scene);
+	}
+
+	/** Phase 1 (onAwake) then Phase 2 (enable + start + subscribe) on `root`. */
+	private awakenAndActivate(root: THREE.Object3D) {
+		// Phase 1: Awake all components on effectively-active objects.
+		// `traverseActiveSelf` prunes any subtree whose root has `activeSelf === false`,
+		// so a `setActive(parent, false)` call before `start()` keeps the whole subtree dormant.
+		traverseActiveSelf(root, (node) => {
+			const ext = getExtension(node);
+			if (!ext) return;
+			if (!ext.context) ext.resolveContext();
+			if (!ext.context) return;
+
+			for (const comp of ext.components) {
+				if (!comp._ctx) comp._ctx = ext.context;
+				if (!comp._awoken) {
+					comp._awoken = true;
+					callHook(comp, "onAwake");
+				}
+			}
+		});
+
+		// Phase 2: Enable + Start + Subscribe for enabled components on the same set.
+		traverseActiveSelf(root, (node) => {
+			const ext = getExtension(node);
+			if (!ext) return;
+
+			for (const comp of ext.components) {
+				if (comp.enabled) {
+					comp._activate(); // skips awake since already done in phase 1
+				}
+			}
+		});
 	}
 
 	/**

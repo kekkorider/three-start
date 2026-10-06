@@ -1,0 +1,123 @@
+---
+title: Scenes
+description: Register extra Three.js scenes and switch which one the renderer draws.
+---
+
+A [`ThreeStart`](/docs/api/three-start) instance always has at least one scene — the one created in the constructor (or passed as `options.scene`). [`ctx.scene`](/docs/api/three-context) and [`ctx.camera`](/docs/api/three-context) always mean that **active** scene. Extra scenes are registered with [`addScene`](/docs/api/three-start) and shown with [`setScene`](/docs/api/three-start).
+
+A single-scene project does not change: `new ThreeStart()`, add objects to `ctx.scene`, `start()`, `mount()`.
+
+## Add and switch
+
+```ts
+const starter = new ThreeStart();
+const menu = starter.addScene(); // [!code highlight]
+const level = starter.ctx.scene;
+
+starter.ctx.scene.add(levelMesh);
+menu.add(menuMesh);
+
+starter.start();
+starter.mount(document.getElementById("three")!);
+
+starter.setScene(menu); // [!code highlight]
+```
+
+`addScene()` returns the scene it registered. Omit both arguments and you get a new `THREE.Scene` plus a new `PerspectiveCamera` parented to it — the same defaults as the constructor.
+
+```ts
+const overlay = starter.addScene();
+const custom = starter.addScene(myScene, myCamera);
+```
+
+<Callout type="warn">
+  `setScene` throws if the scene was never passed to `addScene()`. The constructor scene is already registered. Adding the same scene or the same camera again warns and returns the existing scene.
+</Callout>
+
+`starter.scenes` is the list in insertion order. Index `0` is the constructor scene. The array is read-only at runtime — `push` / index assignment throw.
+
+## Each scene keeps its camera
+
+Assigning `ctx.camera` (or `ctx.ortho`) updates **only the active scene**. Switching away and back restores that scene's camera.
+
+```ts
+starter.setScene(level);
+starter.ctx.camera.position.set(0, 5, 10);
+
+starter.setScene(menu);
+starter.ctx.camera.position.set(0, 0, 4);
+
+starter.setScene(level);
+// ctx.camera is the level camera at (0, 5, 10) again
+```
+
+On switch, the render pipeline rebinds `scenePass.scene` and `scenePass.camera` to the new pair, fits the camera to the current container aspect, and redraws.
+
+Post-processing attached to [`ctx.scenePass`](/docs/api/three-context) stays on that same pass node. The pass follows whichever scene is active — you do not build a new pipeline per scene.
+
+## What pauses, what keeps running
+
+[`ContextModule`](/docs/api/context-module)s are global. They keep receiving `onUpdate` / `onBeforeRender` / `onAfterRender` across switches.
+
+[`Object3DBehaviour`](/docs/api/object3d-behaviour)s run only on the active scene:
+
+| Moment | Components on the scene that lost focus | Components on the scene that gained focus |
+|---|---|---|
+| Leave | `onDisable`, per-frame hooks unsubscribe | — |
+| First show after `start()` | — | Full bootstrap: `onAwake` → `onEnable` → `onStart` |
+| Show again | — | `onEnable`, per-frame hooks subscribe |
+
+`activeSelf` and `object.visible` are left alone. A hidden scene is still in memory with its tree intact; it simply is not drawn and its components are not ticking.
+
+```ts
+class Door extends Object3DBehaviour {
+  onDisable() {
+    // fired when this object's scene is switched away, and when setActive(false)
+  }
+  onEnable() {
+    // fired when the scene comes back, if the object is still active in hierarchy
+  }
+}
+```
+
+Subscribe to the swap itself with [`ThreeContextEvents.SceneChanged`](/docs/api/three-context):
+
+```ts
+import { ThreeContextEvents } from "three-start";
+
+starter.ctx.on(ThreeContextEvents.SceneChanged, (next, prev) => {
+  console.log("now drawing", next, "was", prev);
+});
+```
+
+`CameraChanged` fires first (the new scene's camera is already on `ctx.camera`), then `SceneChanged`.
+
+## `start()` and background scenes
+
+`start()` bootstraps modules once, then bootstraps **whichever scene is active at that moment**. Other registered scenes wait until the first `setScene` that shows them.
+
+Objects staged on a background scene — `addComponent`, `setActive`, even filling the tree — stay dormant. The first time that scene becomes active after `start()`, it gets the same awake / enable pass the first scene got.
+
+<Callout type="info">
+  The three conditions in the [lifecycle guide](/docs/core-guides/lifecycle) still hold, with one extra: the object's scene must be the active one. `ctx.scene` is that scene.
+</Callout>
+
+A `setActive(scene, false)` on a scene root still wins after a switch: coming back does not override an own-flag of `false`.
+
+## Switching before `start()`
+
+`setScene` before `start()` only changes what `ctx.scene` / `ctx.camera` point at. Component lifecycle waits for `start()`, which then bootstraps that active scene.
+
+```ts
+const starter = new ThreeStart();
+const menu = starter.addScene();
+starter.setScene(menu);
+starter.start(); // bootstraps `menu`, not the constructor scene
+```
+
+<Cards>
+  <Card title="ThreeStart API" href="/docs/api/three-start" />
+  <Card title="ThreeContext API" href="/docs/api/three-context" />
+  <Card title="Lifecycle" href="/docs/core-guides/lifecycle" />
+  <Card title="setActive" href="/docs/core-guides/set-active" />
+</Cards>
