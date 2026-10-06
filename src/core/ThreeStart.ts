@@ -8,16 +8,32 @@ import {
 	getExtension,
 	traverseActiveSelf,
 } from "./Object3DExtension";
-import { ThreeContext, type ThreeStartCamera } from "./ThreeContext";
-import { createReadonlyView, defineProps, readOnly } from "./utils/define-props";
+import {
+	ThreeContext,
+	type ThreeStartCamera,
+	type ThreeStartScenes,
+} from "./ThreeContext";
 import { callHook } from "./utils/lifecycle-errors";
+
+const starters = new WeakMap<ThreeContext, ThreeStart>();
+
+/** @internal The `ThreeStart` that owns `ctx`. Used by `addScene` / `setScene`. */
+export function _starterFor(ctx: ThreeContext): ThreeStart {
+	const starter = starters.get(ctx);
+	if (!starter) {
+		throw new Error(
+			`[three-start] Context is not bound to a ThreeStart instance.`
+		);
+	}
+	return starter;
+}
 
 export interface ThreeStartOptions {
 	/** The Three.js renderer to use. Defaults to a `WebGPURenderer` with antialiasing. */
 	renderer?: THREE.Renderer;
 	/** Override the default `PerspectiveCamera` (an `OrthographicCamera` works too). If not provided, one is created automatically and added to the scene. */
 	camera?: ThreeStartCamera;
-	/** Override the default `Scene`. If not provided, an empty scene is created. */
+	/** Override the default `Scene`. If not provided, an empty scene is created. Registered as `scenes.Default`. */
 	scene?: THREE.Scene;
 	/**
 	 * When `true`, the render loop is NOT started automatically on `mount()`.
@@ -34,49 +50,52 @@ export interface ThreeStartOptions {
 
 /**
  * Entry point of every three-start project. Owns a single [`ThreeContext`](/docs/api/three-context),
- * registers modules and extra scenes, controls lifecycle (mount / loop / dispose), and bootstraps
- * the active scene on `start()`. Switch scenes with [`setScene`](/docs/api/three-start).
+ * registers modules, controls lifecycle (mount / loop / dispose), and bootstraps
+ * the active scene on `start()`. Extra scenes: [`addScene`](/docs/api/operations) /
+ * [`setScene`](/docs/api/operations).
  */
 export class ThreeStart {
 	/** The shared [`ThreeContext`](/docs/api/three-context) runtime (renderer, scene, camera, modules, events). Created in the constructor. */
 	readonly ctx: ThreeContext;
 
 	/**
-	 * Registered scenes, in insertion order. Index `0` is the constructor scene.
-	 * Read-only at runtime — mutations throw. Populate via `addScene()`.
+	 * Registered scenes by name. `Default` is the constructor scene. Read-only at
+	 * runtime — mutations throw. Populate via [`addScene`](/docs/api/operations).
+	 * Same object as `ctx.scenes`.
 	 */
-	readonly scenes!: THREE.Scene[];
+	get scenes(): ThreeStartScenes {
+		return this.ctx.scenes;
+	}
 
 	/** `true` once `start()` has been called. After this, modules can no longer be registered. */
 	public get isStarted() {
 		return this._started;
 	}
 
-	private readonly _scenes: THREE.Scene[] = [];
 	private readonly _bootstrapped = new Set<THREE.Scene>();
 	private _started = false;
 
 	constructor(options: ThreeStartOptions = {}) {
 		this.ctx = new ThreeContext(options);
-		this._scenes.push(this.ctx.scene);
+		starters.set(this.ctx, this);
 		ensureExtension(this.ctx.scene)._isCurrentScene = true;
-		defineProps(this, {
-			scenes: readOnly(createReadonlyView(this._scenes, "starter.scenes")),
-		});
 		// Context is NOT attached here — wait for start() so components
 		// added before start() don't activate prematurely.
 	}
 
 	/**
-	 * Register another `THREE.Scene` (and the camera it renders with). The constructor
-	 * scene is already registered. Omitted `scene` creates an empty one; omitted `camera`
-	 * creates a `PerspectiveCamera` and adds it to the scene when it has no parent.
-	 *
-	 * Adding a scene or camera that is already registered warns and returns the existing
-	 * scene. The new scene is not shown until [`setScene`](/docs/api/three-start).
+	 * @internal Register a named scene. Called by [`addScene`](/docs/api/operations).
+	 * Duplicate names throw. Duplicate scene or camera objects warn and return the existing scene.
 	 */
-	addScene(scene?: THREE.Scene, camera?: ThreeStartCamera): THREE.Scene {
-		if (scene && this._scenes.includes(scene)) {
+	_addScene(
+		name: string,
+		scene?: THREE.Scene,
+		camera?: ThreeStartCamera
+	): THREE.Scene {
+		if (this.ctx._hasSceneName(name)) {
+			throw new Error(`[ThreeStart] Scene "${name}" is already registered.`);
+		}
+		if (scene && this.ctx._cameraForScene(scene)) {
 			console.warn(`[ThreeStart] Scene is already registered — skipping.`);
 			return scene;
 		}
@@ -92,34 +111,30 @@ export class ThreeStart {
 		const nextCamera = camera ?? new THREE.PerspectiveCamera();
 		if (!nextCamera.parent) next.add(nextCamera);
 
-		this._scenes.push(next);
-		this.ctx._registerScene(next, nextCamera);
+		this.ctx._registerNamedScene(name, next, nextCamera);
 		ensureExtension(next)._isCurrentScene = false;
 		return next;
 	}
 
 	/**
-	 * Make `scene` the one [`ctx.scene`](/docs/api/three-context) / [`ctx.camera`](/docs/api/three-context)
-	 * point at, and the one the renderer draws. Same scene is a no-op. A scene that was
-	 * never passed to [`addScene`](/docs/api/three-start) throws.
-	 *
-	 * Components on the previous scene receive `onDisable` and pause; components on the
-	 * new scene resume (`onEnable`) or, the first time after `start()`, run the full
-	 * bootstrap. [`ContextModule`](/docs/api/context-module)s keep running.
+	 * @internal Switch the active scene by name. Called by [`setScene`](/docs/api/operations).
+	 * Unknown names throw. Same scene is a no-op.
 	 */
-	setScene(scene: THREE.Scene): this {
-		const prevScene = this.ctx.scene;
-		if (scene === prevScene) return this;
-		if (!this._scenes.includes(scene)) {
+	_setScene(name: string): void {
+		const scene = this.ctx._sceneByName(name);
+		if (!scene) {
 			throw new Error(
-				`[ThreeStart] Scene is not registered. Add it with addScene() first.`
+				`[ThreeStart] Scene "${name}" is not registered. Add it with addScene() first.`
 			);
 		}
+
+		const prevScene = this.ctx.scene;
+		if (scene === prevScene) return;
 
 		const prevCamera = this.ctx._cameraForScene(prevScene) ?? this.ctx.camera;
 		const nextCamera = this.ctx._cameraForScene(scene);
 		if (!nextCamera) {
-			throw new Error(`[ThreeStart] Scene has no camera. Add it with addScene().`);
+			throw new Error(`[ThreeStart] Scene "${name}" has no camera.`);
 		}
 
 		ensureExtension(prevScene)._isCurrentScene = false;
@@ -137,14 +152,13 @@ export class ThreeStart {
 		}
 
 		this.ctx._notifySceneChanged(scene, prevScene, nextCamera, prevCamera);
-		return this;
 	}
 
 	/**
 	 * Bootstrap the active scene: awaken registered [`ContextModule`](/docs/api/context-module)s, attach
 	 * the context to the scene graph, and activate [`Object3DBehaviour`](/docs/api/object3d-behaviour)
 	 * instances on every existing object. After `start()`, any objects added to the active scene get
-	 * bootstrapped automatically. Other registered scenes wait until the first [`setScene`](/docs/api/three-start)
+	 * bootstrapped automatically. Other registered scenes wait until the first [`setScene`](/docs/api/operations)
 	 * that shows them.
 	 *
 	 * No more modules can be registered after this call.

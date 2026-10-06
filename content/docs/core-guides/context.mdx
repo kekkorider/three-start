@@ -3,7 +3,7 @@ title: Context
 description: What's on the context and how to use it from components, modules, or top-level code.
 ---
 
-[`ThreeContext`](/docs/api/three-context) is the single runtime object every [`ThreeStart`](/docs/api/three-start) instance gets. It bundles the renderer, the **active** scene, camera, animation loop, timer, render pipeline, and event bus into one place. Every [`ContextModule`](/docs/api/context-module) and [`Object3DBehaviour`](/docs/api/object3d-behaviour) sees the same instance. Extra scenes live on the starter — [Scenes](/docs/core-guides/scenes).
+[`ThreeContext`](/docs/api/three-context) is the single runtime object every [`ThreeStart`](/docs/api/three-start) instance gets. It bundles the renderer, the **active** scene, named `scenes` map, camera, animation loop, timer, render pipeline, and event bus into one place. Every [`ContextModule`](/docs/api/context-module) and [`Object3DBehaviour`](/docs/api/object3d-behaviour) sees the same instance. Extra scenes: [Scenes](/docs/core-guides/scenes).
 
 You don't construct `ThreeContext` directly. [`ThreeStart`](/docs/api/three-start) creates one in its constructor and exposes it as `starter.ctx`. From any component or module, the same instance is `this.ctx`.
 
@@ -22,7 +22,8 @@ starter.start();
 
 | Field / method | Purpose |
 |---|---|
-| `ctx.scene` | The active `THREE.Scene`. Add objects directly. Reassigning throws — switch with [`setScene`](/docs/api/three-start). |
+| `ctx.scene` | The active `THREE.Scene`. Add objects directly. Reassigning throws — switch with [`setScene`](/docs/api/operations). |
+| `ctx.scenes` | Named map of registered scenes (`Default` is the constructor scene). Same object as `starter.scenes`. |
 | `ctx.camera` | The active camera, typed as `PerspectiveCamera`. Reassigning swaps the camera the **current** scene draws — fires `CameraChanged`. |
 | `ctx.ortho` | The same active camera, typed as `OrthographicCamera`. Assign an orthographic camera through it. |
 | `ctx.isOrtho` | `true` when the active camera is orthographic. |
@@ -115,7 +116,7 @@ Common events:
 | `Mount` / `Unmount` | container / none | Canvas attached / detached. |
 | `LoopRun` / `LoopStop` | none | Animation loop started / stopped. |
 | `CameraChanged` | `newCamera, prevCamera` | `ctx.camera` or `ctx.ortho` was assigned, or `setScene` restored a scene's camera. |
-| `SceneChanged` | `newScene, prevScene` | `starter.setScene()` switched the active scene. Fires after `CameraChanged`. |
+| `SceneChanged` | `newScene, prevScene` | `setScene(ctx, name)` switched the active scene. Fires after `CameraChanged`. |
 | `Error` | `error, source, hook` | A component or module event method, or a ctx listener, threw. See [Errors in event methods](/docs/core-guides/lifecycle#errors-in-event-methods). |
 
 Full list with payload tuples is in the [API reference](/docs/api/three-context#events).

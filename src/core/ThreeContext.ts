@@ -3,9 +3,32 @@ import { createReadonlyView, defineProps, readOnly } from "./utils/define-props"
 import { pass } from "three/tsl";
 import type { ContextModule, ThreeStartModules } from "./ContextModule";
 import type { Object3DBehaviour } from "./Object3DBehaviour";
+import type { RegisterField } from "./Register";
 import type { ThreeStartOptions } from "./ThreeStart";
 import { type ListenerErrorHandler, TypedEmitter } from "./TypedEmitter";
 import { logError } from "./utils/lifecycle-errors";
+
+/**
+ * Named map of registered scenes. The constructor scene is always `Default`.
+ * Populate via [`addScene`](/docs/api/operations); switch with [`setScene`](/docs/api/operations).
+ *
+ * ```ts
+ * declare module "three-start" {
+ *   interface ThreeStartRegister {
+ *     scenes: {
+ *       Default: THREE.Scene;
+ *       Menu: THREE.Scene;
+ *     };
+ *   }
+ * }
+ * ```
+ *
+ * Without registration, `Default` is typed and any other string key is a `THREE.Scene`.
+ */
+export type ThreeStartScenes = RegisterField<
+	"scenes",
+	{ Default: THREE.Scene } & Record<string, THREE.Scene>
+>;
 
 // three-start
 
@@ -24,11 +47,18 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 	/**
 	 * The scene currently being rendered. Always the active scene of the owning
 	 * [`ThreeStart`](/docs/api/three-start). Reassigning throws — switch with
-	 * [`setScene`](/docs/api/three-start).
+	 * [`setScene`](/docs/api/operations).
 	 */
 	get scene(): THREE.Scene {
 		return this._scene;
 	}
+
+	/**
+	 * Registered scenes by name. `Default` is the constructor scene. Read-only at
+	 * runtime — mutations throw. Populate via [`addScene`](/docs/api/operations).
+	 * Same object as `starter.scenes`.
+	 */
+	public readonly scenes!: ThreeStartScenes;
 
 	/** The render pipeline used by the default render function. Sealed at construction. */
 	public readonly renderPipeline!: THREE.RenderPipeline;
@@ -41,6 +71,9 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 
 	/** @internal Backing store for `modules`. `_registerModule` is the only way to add to it. */
 	private readonly _modules: Record<string, ContextModule> = {};
+
+	/** @internal Backing store for `scenes`. `_registerNamedScene` is the only way to add to it. */
+	private readonly _scenes: Record<string, THREE.Scene> = {};
 
 	/**
 	 * The active camera, typed as perspective for the common case. Reassigning it swaps the
@@ -138,12 +171,14 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 			this._scene.add(this._camera);
 		}
 		this._sceneCameras.set(this._scene, this._camera);
+		this._scenes.Default = this._scene;
 		const scenePass = pass(this._scene, this._camera);
 		const renderPipeline = new THREE.RenderPipeline(renderer, scenePass);
 
 		defineProps(this, {
 			isThreeContext: readOnly(true),
 			modules: readOnly(createReadonlyView(this._modules, "ctx.modules")),
+			scenes: readOnly(createReadonlyView(this._scenes, "ctx.scenes")),
 			renderer: readOnly(renderer),
 			scenePass: readOnly(scenePass),
 			renderPipeline: readOnly(renderPipeline),
@@ -157,9 +192,24 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		return true;
 	}
 
-	/** @internal Record a scene's camera. Called by `ThreeStart.addScene()`. */
-	_registerScene(scene: THREE.Scene, camera: ThreeStartCamera): void {
+	/** @internal Record a named scene and its camera. Called by `ThreeStart._addScene()`. */
+	_registerNamedScene(
+		name: string,
+		scene: THREE.Scene,
+		camera: ThreeStartCamera
+	): void {
+		this._scenes[name] = scene;
 		this._sceneCameras.set(scene, camera);
+	}
+
+	/** @internal Whether `name` is already in the scene registry. */
+	_hasSceneName(name: string): boolean {
+		return Object.hasOwn(this._scenes, name);
+	}
+
+	/** @internal Scene registered under `name`, if any. */
+	_sceneByName(name: string): THREE.Scene | undefined {
+		return this._scenes[name];
 	}
 
 	/** @internal Camera last associated with `scene` via `addScene` or `ctx.camera =`. */
@@ -177,7 +227,7 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 
 	/**
 	 * @internal Point the render pipeline at `scene` / `camera`. Does not fire events
-	 * or render — `ThreeStart.setScene()` does that after lifecycle.
+	 * or render — `ThreeStart._setScene()` does that after lifecycle.
 	 */
 	_bindScene(scene: THREE.Scene, camera: ThreeStartCamera): void {
 		this._scene = scene;
@@ -196,7 +246,7 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 
 	/**
 	 * @internal `CameraChanged` then `SceneChanged`, then a redraw. Called by
-	 * `ThreeStart.setScene()` after the new scene's components are running.
+	 * `ThreeStart._setScene()` after the new scene's components are running.
 	 */
 	_notifySceneChanged(
 		newScene: THREE.Scene,
@@ -465,9 +515,9 @@ export enum ThreeContextEvents {
 	Mount = "mount",
 	/** Fired when `starter.unmount()` runs. */
 	Unmount = "unmount",
-	/** Fired when `ctx.camera` is reassigned, including when `starter.setScene()` restores a scene's camera. Carries the new and previous cameras. */
+	/** Fired when `ctx.camera` is reassigned, including when `setScene()` restores a scene's camera. Carries the new and previous cameras. */
 	CameraChanged = "camerachanged",
-	/** Fired when `starter.setScene()` switches the active scene. Carries the new and previous scenes. */
+	/** Fired when `setScene()` switches the active scene. Carries the new and previous scenes. */
 	SceneChanged = "scenechanged",
 	/** Fired when the canvas container resizes (and once on first mount). Carries the new pixel dimensions. */
 	Resized = "resized",

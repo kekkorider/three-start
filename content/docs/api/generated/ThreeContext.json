@@ -8,7 +8,7 @@
       "type": "THREE.Scene",
       "typeHtml": "<span style=\"--shiki-light:#005CC5;--shiki-dark:#79B8FF\">THREE</span><span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">.Scene</span>",
       "readonly": true,
-      "description": "The scene currently being rendered. Always the active scene of the owning\n[`ThreeStart`](/docs/api/three-start). Reassigning throws — switch with\n[`setScene`](/docs/api/three-start)."
+      "description": "The scene currently being rendered. Always the active scene of the owning\n[`ThreeStart`](/docs/api/three-start). Reassigning throws — switch with\n[`setScene`](/docs/api/operations)."
     },
     {
       "name": "camera",
@@ -56,6 +56,13 @@
       "typeHtml": "<span style=\"--shiki-light:#005CC5;--shiki-dark:#79B8FF\">THREE</span><span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">.Renderer</span>",
       "readonly": true,
       "description": "The Three.js renderer owned by this context. Sealed at construction."
+    },
+    {
+      "name": "scenes",
+      "type": "ThreeStartScenes",
+      "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">ThreeStartScenes</span>",
+      "readonly": true,
+      "description": "Registered scenes by name. `Default` is the constructor scene. Read-only at\nruntime — mutations throw. Populate via [`addScene`](/docs/api/operations).\nSame object as `starter.scenes`."
     },
     {
       "name": "renderPipeline",
@@ -255,7 +262,7 @@
             "typeHtml": "<span style=\"--shiki-light:#005CC5;--shiki-dark:#79B8FF\">THREE</span><span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">.PerspectiveCamera</span>"
           }
         ],
-        "description": "Fired when `ctx.camera` is reassigned, including when `starter.setScene()` restores a scene's camera. Carries the new and previous cameras."
+        "description": "Fired when `ctx.camera` is reassigned, including when `setScene()` restores a scene's camera. Carries the new and previous cameras."
       },
       {
         "name": "SceneChanged",
@@ -274,7 +281,7 @@
             "typeHtml": "<span style=\"--shiki-light:#005CC5;--shiki-dark:#79B8FF\">THREE</span><span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">.Scene</span>"
           }
         ],
-        "description": "Fired when `starter.setScene()` switches the active scene. Carries the new and previous scenes."
+        "description": "Fired when `setScene()` switches the active scene. Carries the new and previous scenes."
       },
       {
         "name": "LoopRun",

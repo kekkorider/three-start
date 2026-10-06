@@ -1,5 +1,12 @@
 import * as THREE from "three/webgpu";
-import { addComponent, Object3DBehaviour, ThreeStart, ThreeContextEvents } from "@/core";
+import {
+	addComponent,
+	addScene,
+	Object3DBehaviour,
+	setScene,
+	ThreeStart,
+	ThreeContextEvents,
+} from "@/core";
 
 // A component: extend Object3DBehaviour, override the event methods you need.
 class Spin extends Object3DBehaviour {
@@ -14,12 +21,14 @@ class Spin extends Object3DBehaviour {
 
 // Bootstrap: renderer, scene, camera, render loop, resize — one constructor.
 const starter = new ThreeStart();
+const { ctx } = starter;
 
-const { scene, camera } = starter.ctx;
+const { scene, camera } = ctx;
 scene.name = "Scene A";
 scene.background = new THREE.Color(0x070907);
 camera.position.set(0, 1.4, 4.4);
 camera.lookAt(0, 0, 0);
+
 
 const crystal = new THREE.Mesh(
   new THREE.IcosahedronGeometry(1.1),
@@ -47,7 +56,7 @@ addComponent(shell, Spin).speed = -0.25;
 // Scene B
 const sceneB = new THREE.Scene();
 sceneB.name = "Scene B";
-starter.addScene(sceneB, camera.clone());
+addScene(ctx, "Scene B", sceneB, camera.clone());
 
 const capsuleB = new THREE.Mesh(
   new THREE.CapsuleGeometry(0.5, 0.85, 12, 16),
@@ -67,14 +76,14 @@ const torusC = new THREE.Mesh(
 addComponent(torusC, Spin);
 sceneC.add(torusC);
 
-starter.addScene(sceneC, camera.clone());
+addScene(ctx, "Scene C", sceneC, camera.clone());
 
 starter.ctx.once(ThreeContextEvents.Mount, () => {
   document.body.addEventListener("click", () => {
-    const currIndex = starter.scenes.indexOf(starter.ctx.scene);
-    const nextIndex = (currIndex + 1) % starter.scenes.length;
-
-    starter.setScene(starter.scenes[nextIndex]);
+    const names = Object.keys(starter.scenes);
+    const currIndex = names.findIndex((n) => starter.scenes[n] === starter.ctx.scene);
+    const nextIndex = (currIndex + 1) % names.length;
+    setScene(ctx, names[nextIndex]);
   })
 })
 
