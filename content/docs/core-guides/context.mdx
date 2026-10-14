@@ -32,7 +32,7 @@ starter.start();
 | `ctx.modules` | Registered [`ContextModule`](/docs/api/context-module) instances, keyed by name. Read-only at runtime. |
 | `ctx.getDeltaTime()` / `ctx.getTime()` / `ctx.getTimescale()` | Frame-time accessors. Time scaling applies to both. |
 | `ctx.setTimescale(n)` | Set time scale — `1` = realtime, `0` = freeze, `2` = 2× speed. |
-| `ctx.maxFps` | Upper limit of loop ticks per second; `Infinity` (default) = every display frame. |
+| `ctx.maxFps` | Upper limit of loop ticks per second; `Infinity` (default) = every display frame. See [Limiting the frame rate](#limiting-the-frame-rate). |
 | `ctx.render()` / `ctx.overrideRender(fn)` / `ctx.resetRender()` | Manual render control (see below). |
 | `ctx.on(event, fn)` / `ctx.off(...)` / `ctx.once(...)` | Event bus (see below). |
 | `ctx.canvasContainer` / `ctx.isMounted` / `ctx.isLoopRunning` | Mount and loop status flags. |
@@ -101,7 +101,27 @@ ctx.maxFps = 30;        // at most 30 ticks per second
 ctx.maxFps = Infinity;  // back to every display frame
 ```
 
-A skipped display frame runs nothing — no `Update`, no `render()` — and the next tick's `getDeltaTime()` covers the skipped time, so delta-based motion keeps its speed. The limit can change at any moment, even while the loop runs: lowering it on idle and raising it on input is a cheap way to save GPU and battery. TSL's `time` node keeps advancing on every display frame regardless, since the renderer updates it on its own.
+A skipped display frame runs nothing — no `Update`, no `render()` — and the next tick's `getDeltaTime()` covers the skipped time, so delta-based motion keeps its speed. The limit can change at any moment, even while the loop runs: lowering it on idle and raising it on input is a cheap way to save GPU and battery.
+
+#### TSL timer nodes and `maxFpsPatchesRenderer`
+
+`WebGPURenderer` runs its own `requestAnimationFrame` loop, and on every display frame it updates the TSL `time` / `deltaTime` / `frameId` nodes, resets `renderer.info` and drives the inspector — before three-start's loop gets the frame. To make that work wait for loop ticks too, three-start swaps the `requestAnimationFrame` provider of that internal loop for one that leaves out the frames `maxFps` skips. TSL `deltaTime` then covers the skipped time just like `getDeltaTime()`.
+
+<Callout type="warn">
+  This patches three.js internals: the swap goes through `renderer._animation`, a private field. It happens only once `maxFps` is finite — without a limit three.js stays untouched — and stays until `dispose()`. Pass `maxFpsPatchesRenderer: false` in [`ThreeStartOptions`](/docs/api/three-start) to never patch.
+</Callout>
+
+With `maxFpsPatchesRenderer: false` (or a renderer without that internal loop), `maxFps` skips only `Update` and `render()`, and TSL `deltaTime` measures a single display frame instead of the time since the last tick. Shaders that accumulate by `deltaTime` — e.g. a compute pass moving particles — then run slower under `maxFps`. Feed them the loop's delta through a uniform instead:
+
+```ts
+const dt = uniform(0);
+position.addAssign(velocity.mul(dt)); // [!code highlight]
+
+// in onUpdate():
+dt.value = this.ctx.getDeltaTime();
+```
+
+`maxFps` doesn't apply while a WebXR session presents — a headset expects every frame. With the patch on, three drives its loop from the session for that time and puts the patched provider back when the session ends. TSL timer nodes don't follow `ctx.setTimescale()` in either mode — use a uniform as above when a shader needs scaled time.
 
 ## Events
 

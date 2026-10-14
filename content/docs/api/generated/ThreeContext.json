@@ -47,7 +47,7 @@
       "name": "maxFps",
       "type": "number",
       "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">number</span>",
-      "description": "Upper limit of loop ticks per second; `Infinity` = every display frame.\nSkipped frames run nothing: `Update` and `render()` wait, and the next tick's\n`getDeltaTime()` covers the skipped time. Can be changed while the loop runs.",
+      "description": "Upper limit of loop ticks per second; `Infinity` = every display frame.\nSkipped frames run nothing: `Update` and `render()` wait, and the next tick's\n`getDeltaTime()` covers the skipped time. Can be changed while the loop runs.\nWith `maxFpsPatchesRenderer` (default) three's own frame work waits too, so TSL\n`deltaTime` matches `getDeltaTime()` apart from `timescale`. Doesn't apply while a\nWebXR session presents.",
       "default": "Infinity"
     },
     {

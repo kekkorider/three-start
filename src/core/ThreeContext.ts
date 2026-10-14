@@ -5,12 +5,16 @@ import type { ContextModule, ThreeStartModules } from "./ContextModule";
 import type { Object3DBehaviour } from "./Object3DBehaviour";
 import type { ThreeStartOptions } from "./ThreeStart";
 import { type ListenerErrorHandler, TypedEmitter } from "./TypedEmitter";
+import { FrameLimiter } from "./utils/frame-limiter";
 import { logError } from "./utils/lifecycle-errors";
 
 // three-start
 
-/** How early (ms) a tick may come and still count under `maxFps`. */
-const FRAME_SLACK_MS = 1;
+/** The part of three's internal `Animation` (`renderer._animation`) that `maxFpsPatchesRenderer` swaps. */
+interface RendererAnimation {
+	getContext(): AnimationFrameProvider;
+	setContext(context: AnimationFrameProvider): void;
+}
 
 /**
  * The shared runtime of a scene — renderer, camera, animation loop, timer, render pipeline,
@@ -83,21 +87,17 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 	 * Upper limit of loop ticks per second; `Infinity` = every display frame.
 	 * Skipped frames run nothing: `Update` and `render()` wait, and the next tick's
 	 * `getDeltaTime()` covers the skipped time. Can be changed while the loop runs.
+	 * With `maxFpsPatchesRenderer` (default) three's own frame work waits too, so TSL
+	 * `deltaTime` matches `getDeltaTime()` apart from `timescale`. Doesn't apply while a
+	 * WebXR session presents.
 	 * @default Infinity
 	 */
 	public get maxFps(): number {
-		return this._maxFps;
+		return this._frameLimiter.maxFps;
 	}
 
 	public set maxFps(value: number) {
-		if (!(value > 0)) {
-			console.warn(
-				`[three-start] maxFps must be a positive number, got ${value}; using Infinity`
-			);
-			value = Infinity;
-		}
-		this._maxFps = value;
-		this._frameInterval = value === Infinity ? 0 : 1000 / value;
+		this._frameLimiter.maxFps = value;
 	}
 
 	/**
@@ -114,11 +114,17 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 	private _resizeObserver: ResizeObserver | null = null;
 	private _isMounted = false;
 	private _isLoopRunning = false;
-	private _maxFps = Infinity;
-	/** ms between ticks under `maxFps`; `0` — no limit. */
-	private _frameInterval = 0;
-	/** Scheduled time of the last tick that ran, in rAF timestamps. */
-	private _lastTickAt = 0;
+	private readonly _frameLimiter = new FrameLimiter();
+	/** `true` until the first tick after `runLoop()`; that tick never waits for `maxFps`. */
+	private _isFirstTick = true;
+	/** `true` while the patched rAF provider runs a frame it let through. */
+	private _isFrameGated = false;
+	/** Set once `maxFpsPatchesRenderer` has swapped the renderer's rAF provider. */
+	private _animationPatch: {
+		animation: RendererAnimation;
+		base: AnimationFrameProvider;
+		gated: AnimationFrameProvider;
+	} | null = null;
 
 	/** Seconds elapsed since the previous tick, scaled by `timescale`. Use inside per-frame methods. */
 	getDeltaTime = () => this._timer.getDelta();
@@ -236,36 +242,101 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		// Reset on start, not on stop: the first tick then measures from this call,
 		// so time spent with the loop stopped never lands in `getDeltaTime()`.
 		this._timer.reset();
-		let isFirstTick = true;
+		this._isFirstTick = true;
 
-		this.renderer.setAnimationLoop((timestamp) => {
-			if (!isFirstTick && this._skipTick(timestamp)) return;
-			if (isFirstTick) this._lastTickAt = timestamp;
-			// `reset()` reads `performance.now()`, while a rAF timestamp is the frame's
-			// vsync and may predate this call — the first tick uses the same clock so
-			// its delta can't go negative.
-			this._timer.update(isFirstTick ? undefined : timestamp);
-			isFirstTick = false;
-			this._emitIsolated(ThreeContextEvents.Update, this._onListenerError);
-			this.render();
-		});
+		// With a limit already set, patch before the first tick: three requests each frame one
+		// frame ahead, so a frame requested before the patch would run three's frame work once
+		// more. `renderer._animation` exists only once `init()` resolves.
+		if (this.maxFps !== Infinity) {
+			if (this.renderer.initialized) this._patchRenderer();
+			else this.renderer.init().then(() => this._patchRenderer(), () => {});
+		}
+		this.renderer.setAnimationLoop(this._tick);
 		this._emitIsolated(ThreeContextEvents.LoopRun, this._onListenerError);
 	};
 
-	/** `true` when `maxFps` leaves this display frame out. */
-	private _skipTick(timestamp: number): boolean {
-		const interval = this._frameInterval;
-		if (interval === 0) {
-			this._lastTickAt = timestamp;
-			return false;
+	private _tick = (timestamp: number): void => {
+		if (this._isFirstTick) {
+			this._frameLimiter.restart(timestamp);
+		} else if (!this._isFrameGated && !this._isXRPresenting()) {
+			// A frame that didn't pass the patched provider: no patch yet (no limit set, or
+			// `maxFpsPatchesRenderer` off), or the one three requested before the patch went in.
+			// A limit set while the loop runs gets the patch here, from the next frame on.
+			this._patchRenderer();
+			if (this._frameLimiter.shouldSkip(timestamp)) return;
 		}
-		// rAF timestamps jitter around the vsync: without the slack a 30 fps limit
-		// on a 120 Hz display would randomly wait a fifth frame instead of the fourth.
-		if (timestamp - this._lastTickAt < interval - FRAME_SLACK_MS) return true;
-		// Keep the cadence on the schedule; after a long gap (raised limit, hidden tab) start anew.
-		this._lastTickAt += interval;
-		if (timestamp - this._lastTickAt > interval) this._lastTickAt = timestamp;
-		return false;
+		// `reset()` reads `performance.now()`, while a rAF timestamp is the frame's
+		// vsync and may predate this call — the first tick uses the same clock so
+		// its delta can't go negative.
+		this._timer.update(this._isFirstTick ? undefined : timestamp);
+		this._isFirstTick = false;
+		this._emitIsolated(ThreeContextEvents.Update, this._onListenerError);
+		this.render();
+	};
+
+	/**
+	 * Swaps the rAF provider of three's internal animation loop for one that leaves out
+	 * the frames `maxFps` skips, so three's per-frame work (TSL timer nodes, `info` reset,
+	 * inspector) runs only on loop ticks. No-op until `maxFps` is finite, and when
+	 * `maxFpsPatchesRenderer` is off, the renderer has no such loop, or a WebXR session
+	 * drives it right now. Once in, the patch stays until `dispose()`: with `maxFps` back at
+	 * `Infinity` it lets every frame through.
+	 */
+	private _patchRenderer(): void {
+		if (this._animationPatch || this.maxFps === Infinity) return;
+		if (!(this.options.maxFpsPatchesRenderer ?? true)) return;
+		const animation = (this.renderer as unknown as { _animation?: RendererAnimation | null })
+			._animation;
+		if (typeof animation?.getContext !== "function" || typeof animation.setContext !== "function") {
+			return;
+		}
+		const base = animation.getContext();
+		if (base !== globalThis) return;
+
+		// three keeps one frame requested at a time and cancels it by the id it got back,
+		// while a skipped frame re-requests under a new id — so the first id stays the handle.
+		let pending: { handle: number; id: number } | null = null;
+		const gated: AnimationFrameProvider = {
+			requestAnimationFrame: (callback) => {
+				const step = (timestamp: number) => {
+					if (
+						pending &&
+						this._isLoopRunning &&
+						!this._isFirstTick &&
+						this._frameLimiter.shouldSkip(timestamp)
+					) {
+						pending.id = base.requestAnimationFrame(step);
+						return;
+					}
+					pending = null;
+					this._isFrameGated = true;
+					try {
+						callback(timestamp);
+					} finally {
+						this._isFrameGated = false;
+					}
+				};
+				const id = base.requestAnimationFrame(step);
+				pending = { handle: id, id };
+				return id;
+			},
+			cancelAnimationFrame: (handle) => {
+				if (pending?.handle === handle) {
+					base.cancelAnimationFrame(pending.id);
+					pending = null;
+				} else {
+					base.cancelAnimationFrame(handle);
+				}
+			},
+		};
+		// WebXR swaps in its session for the session's lifetime and puts `gated` back after.
+		animation.setContext(gated);
+		this._animationPatch = { animation, base, gated };
+	}
+
+	/** `maxFps` doesn't apply in WebXR: a headset compositor expects every frame. */
+	private _isXRPresenting(): boolean {
+		return !!(this.renderer as { xr?: { isPresenting?: boolean } }).xr?.isPresenting;
 	}
 
 	/**
@@ -289,7 +360,13 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 	dispose = (): void => {
 		this.unmount();
 		this.stopLoop();
+		// After `renderer.dispose()`: it cancels three's pending frame through `gated`.
 		this.renderer.dispose();
+		const patch = this._animationPatch;
+		if (patch && patch.animation.getContext() === patch.gated) {
+			patch.animation.setContext(patch.base);
+		}
+		this._animationPatch = null;
 		this._removeAllListeners();
 		this._timer.disconnect();
 		this._timer.dispose();

@@ -45,6 +45,14 @@
       "default": "Infinity"
     },
     {
+      "name": "maxFpsPatchesRenderer",
+      "type": "boolean",
+      "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">boolean</span>",
+      "optional": true,
+      "description": "Only matters once `maxFps` is finite — until then three.js is untouched either way.\n\nWhen `true`, a finite `maxFps` patches the renderer's internal animation loop: three-start\nswaps the `requestAnimationFrame` provider of `renderer._animation` (a private three.js\nfield) for one that leaves out skipped frames, so three's own per-frame work — TSL\n`time` / `deltaTime` / `frameId`, `renderer.info` reset, the inspector — runs only on\nloop ticks too. The patch goes in when the loop runs with a limit set, or on the next\nframe after one is set, and stays until `dispose()`.\n\nWhen `false`, three.js is left untouched and `maxFps` skips only `Update` and `render()`:\nTSL `deltaTime` then measures one display frame, not the time since the last tick.\nAlso falls back to that when the renderer has no such internal loop.",
+      "default": "true"
+    },
+    {
       "name": "autoInitRenderer",
       "type": "boolean",
       "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">boolean</span>",
