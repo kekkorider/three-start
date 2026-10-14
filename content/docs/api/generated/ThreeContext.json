@@ -44,6 +44,13 @@
       "description": "`true` while the animation loop is running (between `runLoop()` and `stopLoop()`)."
     },
     {
+      "name": "maxFps",
+      "type": "number",
+      "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">number</span>",
+      "description": "Upper limit of loop ticks per second; `Infinity` = every display frame.\nSkipped frames run nothing: `Update` and `render()` wait, and the next tick's\n`getDeltaTime()` covers the skipped time. Can be changed while the loop runs.",
+      "default": "Infinity"
+    },
+    {
       "name": "renderer",
       "type": "THREE.Renderer",
       "typeHtml": "<span style=\"--shiki-light:#005CC5;--shiki-dark:#79B8FF\">THREE</span><span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">.Renderer</span>",

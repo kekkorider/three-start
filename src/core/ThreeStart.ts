@@ -18,6 +18,11 @@ export interface ThreeStartOptions {
 	 */
 	manageLoopManually?: boolean;
 	/**
+	 * Upper limit of loop ticks per second, see `ctx.maxFps`.
+	 * @default Infinity
+	 */
+	maxFps?: number;
+	/**
 	 * When `true`, calls `renderer.init()` inside the constructor.
 	 * @default true
 	 */

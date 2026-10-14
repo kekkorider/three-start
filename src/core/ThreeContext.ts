@@ -9,6 +9,9 @@ import { logError } from "./utils/lifecycle-errors";
 
 // three-start
 
+/** How early (ms) a tick may come and still count under `maxFps`. */
+const FRAME_SLACK_MS = 1;
+
 /**
  * The shared runtime of a scene — renderer, camera, animation loop, timer, render pipeline,
  * event bus, and [`ContextModule`](/docs/api/context-module) registry. Created and owned
@@ -77,6 +80,27 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 	}
 
 	/**
+	 * Upper limit of loop ticks per second; `Infinity` = every display frame.
+	 * Skipped frames run nothing: `Update` and `render()` wait, and the next tick's
+	 * `getDeltaTime()` covers the skipped time. Can be changed while the loop runs.
+	 * @default Infinity
+	 */
+	public get maxFps(): number {
+		return this._maxFps;
+	}
+
+	public set maxFps(value: number) {
+		if (!(value > 0)) {
+			console.warn(
+				`[three-start] maxFps must be a positive number, got ${value}; using Infinity`
+			);
+			value = Infinity;
+		}
+		this._maxFps = value;
+		this._frameInterval = value === Infinity ? 0 : 1000 / value;
+	}
+
+	/**
 	 * @internal While `true`, `Object3DExtension.addComponent` defers component
 	 * activation. Set by `ThreeStart.start()` during module bootstrap so that
 	 * components created inside a module's `onAwake`/`onStart` don't subscribe
@@ -90,6 +114,11 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 	private _resizeObserver: ResizeObserver | null = null;
 	private _isMounted = false;
 	private _isLoopRunning = false;
+	private _maxFps = Infinity;
+	/** ms between ticks under `maxFps`; `0` — no limit. */
+	private _frameInterval = 0;
+	/** Scheduled time of the last tick that ran, in rAF timestamps. */
+	private _lastTickAt = 0;
 
 	/** Seconds elapsed since the previous tick, scaled by `timescale`. Use inside per-frame methods. */
 	getDeltaTime = () => this._timer.getDelta();
@@ -121,6 +150,7 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 			renderer.init();
 		}
 		this._timer = new THREE.Timer();
+		if (options.maxFps !== undefined) this.maxFps = options.maxFps;
 		const scene = options.scene ?? new THREE.Scene();
 		this._camera = options.camera ?? new THREE.PerspectiveCamera();
 		if (!this._camera.parent) {
@@ -209,6 +239,8 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		let isFirstTick = true;
 
 		this.renderer.setAnimationLoop((timestamp) => {
+			if (!isFirstTick && this._skipTick(timestamp)) return;
+			if (isFirstTick) this._lastTickAt = timestamp;
 			// `reset()` reads `performance.now()`, while a rAF timestamp is the frame's
 			// vsync and may predate this call — the first tick uses the same clock so
 			// its delta can't go negative.
@@ -219,6 +251,22 @@ export class ThreeContext extends TypedEmitter<ThreeContextEventMap> {
 		});
 		this._emitIsolated(ThreeContextEvents.LoopRun, this._onListenerError);
 	};
+
+	/** `true` when `maxFps` leaves this display frame out. */
+	private _skipTick(timestamp: number): boolean {
+		const interval = this._frameInterval;
+		if (interval === 0) {
+			this._lastTickAt = timestamp;
+			return false;
+		}
+		// rAF timestamps jitter around the vsync: without the slack a 30 fps limit
+		// on a 120 Hz display would randomly wait a fifth frame instead of the fourth.
+		if (timestamp - this._lastTickAt < interval - FRAME_SLACK_MS) return true;
+		// Keep the cadence on the schedule; after a long gap (raised limit, hidden tab) start anew.
+		this._lastTickAt += interval;
+		if (timestamp - this._lastTickAt > interval) this._lastTickAt = timestamp;
+		return false;
+	}
 
 	/**
 	 * @internal Use `starter.stopLoop()` instead.

@@ -37,6 +37,14 @@
       "default": "false"
     },
     {
+      "name": "maxFps",
+      "type": "number",
+      "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">number</span>",
+      "optional": true,
+      "description": "Upper limit of loop ticks per second, see `ctx.maxFps`.",
+      "default": "Infinity"
+    },
+    {
       "name": "autoInitRenderer",
       "type": "boolean",
       "typeHtml": "<span style=\"--shiki-light:#24292E;--shiki-dark:#E1E4E8\">boolean</span>",

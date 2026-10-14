@@ -32,6 +32,7 @@ starter.start();
 | `ctx.modules` | Registered [`ContextModule`](/docs/api/context-module) instances, keyed by name. Read-only at runtime. |
 | `ctx.getDeltaTime()` / `ctx.getTime()` / `ctx.getTimescale()` | Frame-time accessors. Time scaling applies to both. |
 | `ctx.setTimescale(n)` | Set time scale — `1` = realtime, `0` = freeze, `2` = 2× speed. |
+| `ctx.maxFps` | Upper limit of loop ticks per second; `Infinity` (default) = every display frame. |
 | `ctx.render()` / `ctx.overrideRender(fn)` / `ctx.resetRender()` | Manual render control (see below). |
 | `ctx.on(event, fn)` / `ctx.off(...)` / `ctx.once(...)` | Event bus (see below). |
 | `ctx.canvasContainer` / `ctx.isMounted` / `ctx.isLoopRunning` | Mount and loop status flags. |
@@ -90,6 +91,17 @@ You can call them in any order. `mount` without `start` gives you a black canvas
 `runLoop()` / `stopLoop()` start and stop the animation loop independently of mount.
 
 Time doesn't run while the loop is stopped: the first tick after `runLoop()` measures `getDeltaTime()` from the `runLoop()` call, not from the last tick before `stopLoop()`. Stopping the loop on idle and restarting it on demand never feeds a component one huge delta.
+
+### Limiting the frame rate
+
+By default the loop ticks on every display frame — 120 times a second on a 120 Hz screen. `ctx.maxFps` caps it (or pass `maxFps` in `ThreeStartOptions`):
+
+```ts
+ctx.maxFps = 30;        // at most 30 ticks per second
+ctx.maxFps = Infinity;  // back to every display frame
+```
+
+A skipped display frame runs nothing — no `Update`, no `render()` — and the next tick's `getDeltaTime()` covers the skipped time, so delta-based motion keeps its speed. The limit can change at any moment, even while the loop runs: lowering it on idle and raising it on input is a cheap way to save GPU and battery. TSL's `time` node keeps advancing on every display frame regardless, since the renderer updates it on its own.
 
 ## Events
 
