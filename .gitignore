@@ -30,3 +30,6 @@ dist
 !.dev.vars.example
 .env*
 !.env.example
+
+# vitest browser-mode failure screenshots
+.vitest

@@ -73,6 +73,7 @@ This repo contains three things in one place, kept together for easier sync and 
 - `src/core/` — library source. Built separately via `vite.lib.config.ts` (`npm run build:lib`).
 - `content/docs/` — MDX documentation. Static site generation is already wired up.
 - `scripts/gen-api-docs.ts` — parses library sources and emits API type JSON.
+- `tests/` — library tests (Vitest browser mode, see [Tests](#tests)).
 - `content/docs/api/generated/` — generated API type data (do not edit by hand).
 
 ## Tech Stack
@@ -88,6 +89,7 @@ This repo contains three things in one place, kept together for easier sync and 
 - `npm run build:lib` — build the library only (uses `vite.lib.config.ts`).
 - `npm run docs:gen` / `npm run prebuild` — regenerate `content/docs/api/generated/` via `scripts/gen-api-docs.ts`.
 - `npm run types:check` — type-check the project.
+- `npm test` — run the library tests in headless Chromium.
 - `npm run lint` / `npm run format` — Biome.
 
 ## To Understand the Library
@@ -98,6 +100,16 @@ Read these first:
 - [content/docs/why.mdx](content/docs/why.mdx)
 - [content/docs/advanced/internals.mdx](content/docs/advanced/internals.mdx)
 - The source itself in [src/core/](src/core/)
+
+## Tests
+
+`npm test` runs `tests/**/*.test.ts` with **Vitest browser mode**: every test file runs inside a real headless Chromium (Playwright), because WebGPU, `requestAnimationFrame` and canvas don't exist in Node. Config: [vitest.config.ts](vitest.config.ts) — standalone, not merged with the site's `vite.config.ts`. First run on a machine needs the browser: `npx playwright install chromium`.
+
+- `tests/frame-limiter.test.ts` — the `maxFps` schedule (`src/core/utils/frame-limiter.ts`) fed synthetic rAF timestamps: display rates, jitter, dropped frames, gaps, limit changes. Deterministic, milliseconds.
+- `tests/max-fps.test.ts` — the render loop on a real `WebGPURenderer`: tick rate, TSL `deltaTime` / `frameId` read back from a compute pass, the rendered pixel's TSL `time`, `maxFpsPatchesRenderer`, `dispose()`, a replayed WebXR session. These measure real frames, so their assertions keep a few percent of slack.
+- `tests/helpers/` — `simulate-display.ts` (synthetic display for the schedule), `scene.ts` (instrumented `ThreeStart` scene, three internals the tests read).
+
+Files run one at a time (`fileParallelism: false`): each runs in its own iframe, and a background iframe gets no `requestAnimationFrame`.
 
 ## Notes for Agents
 
