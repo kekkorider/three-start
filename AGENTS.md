@@ -58,6 +58,44 @@ The published tarball ships: `dist/`, `README.md`, `LICENSE`, `llms.txt`, `llms-
 
 `llms.txt` and `llms-full.txt` are generated artifacts (gitignored) — refreshed on every publish by `scripts/gen-llms-txt.ts`, which runs the same Fumadocs `source` loader as the dev/SSR routes via Vite's programmatic API.
 
+## 4. Commits and releases
+
+Commit titles follow [Conventional Commits](https://www.conventionalcommits.org/) the way release-please reads them — the changelog will be generated from them later, so every title must stand on its own as a changelog line.
+
+### Commit titles
+
+```
+type(scope): what was done
+```
+
+- **English, title only.** No body, no `Co-Authored-By` or any other trailer.
+- **Describe fully what was done.** Name the behavior that changed, not the file touched. A long title is fine — a vague one is not.
+  - ✅ `feat(core): limit the render loop frame rate with ctx.maxFps and the maxFps option, changeable while the loop runs`
+  - ❌ `feat(core): add maxFps`
+- **Types:** `feat` (new capability), `fix` (bug fix), `perf`, `refactor` (no behavior change), `test`, `docs`, `build` (dependencies, build config), `ci`, `chore`. Breaking change: `!` before the colon, e.g. `feat(core)!: …`.
+- **Scopes:** `core` (the library, `src/core/`), `site` (landing, docs app shell, `src/components/`), `examples`. Repo docs (`AGENTS.md`, `README.md`) and docs pages on their own use `docs:` without a scope.
+- **One logical change per commit.** Docs pages and regenerated `content/docs/api/generated/` JSON go into the commit of the library change they describe.
+
+### Before committing
+
+1. Commit only when the maintainer asks for it.
+2. First propose the commits: each title plus the files it takes. Wait for approval, then commit exactly that.
+
+### Releasing a version
+
+The version bump is a commit of its own, after the change commits:
+
+```bash
+npm version X.Y.Z --no-git-tag-version          # package.json + package-lock.json only
+git commit -am "chore(release): vX.Y.Z"
+git tag -a vX.Y.Z -m "vX.Y.Z"                    # annotated, never lightweight
+git push --follow-tags origin main               # pushes the commit and the annotated tag
+```
+
+Then `npm publish` (§3). Picking the version while the library is `0.x`: a `feat` or a behavior change → minor (`0.4.0 → 0.5.0`); only fixes → patch (`0.4.0 → 0.4.1`). A patch reaches everyone on `^0.4.0` on their next install, so nothing that changes behavior goes into one.
+
+Releases up to `v0.4.0` used `X.Y.Z: description` commits — that format is retired.
+
 ---
 
 # Repository Overview
@@ -223,7 +261,7 @@ This is what enables the "use markdown links to other classes" convention — se
 
 - Every public class, field, getter, and method should have at least a one-line description. The renderer shows `(no description)` blanks otherwise.
 - Use `@internal` to hide a member from both `.d.ts` (via `stripInternal: true`) and the API docs.
-- Use `@default <value>` on options fields to populate the `default` column.
+- Use `@default <value>` on options fields and getters to populate the `default` column.
 - Use `@deprecated` to flag deprecation; both `.d.ts` and the docs surface it.
 - Use `@lifecycle` to put a method in the **Override methods** section instead of regular Methods (for `onAwake`, `onUpdate`, etc).
 - `protected` members are auto-tagged `@protected` in the rendered table — no need to write the tag yourself.
