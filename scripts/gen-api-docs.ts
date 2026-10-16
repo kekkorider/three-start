@@ -486,6 +486,8 @@ for (const target of TARGETS) {
     };
     const desc = getDesc(getter);
     if (desc) entry.description = desc;
+    const def = getDefaultVal(getter);
+    if (def) entry.default = def;
     if (checkDeprecated(getter)) entry.deprecated = true;
     props.push(entry);
   }

@@ -1,6 +1,6 @@
 {
   "name": "three-start",
-  "version": "0.3.1",
+  "version": "0.5.0",
   "description": "Minimal foundation layer for Three.js: bootstrap, lifecycle, and a unified component model. A thin layer around Three.js, not a replacement for it.",
   "keywords": [
     "three",
@@ -71,7 +71,8 @@
     "lint": "biome check",
     "format": "biome format --write",
     "deploy": "npm run build && wrangler deploy",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "test": "vitest run"
   },
   "peerDependencies": {
     "@types/three": ">=0.183.0",
@@ -93,6 +94,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/three": "0.183.1",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/browser-playwright": "^5.0.4",
     "animejs": "^4.5.0",
     "camera-controls": "^3.1.2",
     "eventemitter3": "5.0.4",
@@ -102,6 +104,7 @@
     "lucide-react": "^1.8.0",
     "mermaid": "^11.14.0",
     "next-themes": "^0.4.6",
+    "playwright": "^1.64.1",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "serve": "^14.2.6",
@@ -112,6 +115,7 @@
     "tsx": "^4.21.0",
     "typescript": "^6.0.2",
     "vite": "^8.0.8",
+    "vitest": "^5.0.4",
     "wrangler": "^4.85.0"
   }
 }

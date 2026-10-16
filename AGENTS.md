@@ -58,6 +58,44 @@ The published tarball ships: `dist/`, `README.md`, `LICENSE`, `llms.txt`, `llms-
 
 `llms.txt` and `llms-full.txt` are generated artifacts (gitignored) — refreshed on every publish by `scripts/gen-llms-txt.ts`, which runs the same Fumadocs `source` loader as the dev/SSR routes via Vite's programmatic API.
 
+## 4. Commits and releases
+
+Commit titles follow [Conventional Commits](https://www.conventionalcommits.org/) the way release-please reads them — the changelog will be generated from them later, so every title must stand on its own as a changelog line.
+
+### Commit titles
+
+```
+type(scope): what was done
+```
+
+- **English, title only.** No body, no `Co-Authored-By` or any other trailer.
+- **Describe fully what was done.** Name the behavior that changed, not the file touched. A long title is fine — a vague one is not.
+  - ✅ `feat(core): limit the render loop frame rate with ctx.maxFps and the maxFps option, changeable while the loop runs`
+  - ❌ `feat(core): add maxFps`
+- **Types:** `feat` (new capability), `fix` (bug fix), `perf`, `refactor` (no behavior change), `test`, `docs`, `build` (dependencies, build config), `ci`, `chore`. Breaking change: `!` before the colon, e.g. `feat(core)!: …`.
+- **Scopes:** `core` (the library, `src/core/`), `site` (landing, docs app shell, `src/components/`), `examples`. Repo docs (`AGENTS.md`, `README.md`) and docs pages on their own use `docs:` without a scope.
+- **One logical change per commit.** Docs pages and regenerated `content/docs/api/generated/` JSON go into the commit of the library change they describe.
+
+### Before committing
+
+1. Commit only when the maintainer asks for it.
+2. First propose the commits: each title plus the files it takes. Wait for approval, then commit exactly that.
+
+### Releasing a version
+
+The version bump is a commit of its own, after the change commits:
+
+```bash
+npm version X.Y.Z --no-git-tag-version          # package.json + package-lock.json only
+git commit -am "chore(release): vX.Y.Z"
+git tag -a vX.Y.Z -m "vX.Y.Z"                    # annotated, never lightweight
+git push --follow-tags origin main               # pushes the commit and the annotated tag
+```
+
+Then `npm publish` (§3). Picking the version while the library is `0.x`: a `feat` or a behavior change → minor (`0.4.0 → 0.5.0`); only fixes → patch (`0.4.0 → 0.4.1`). A patch reaches everyone on `^0.4.0` on their next install, so nothing that changes behavior goes into one.
+
+Releases up to `v0.4.0` used `X.Y.Z: description` commits — that format is retired.
+
 ---
 
 # Repository Overview
@@ -73,6 +111,7 @@ This repo contains three things in one place, kept together for easier sync and 
 - `src/core/` — library source. Built separately via `vite.lib.config.ts` (`npm run build:lib`).
 - `content/docs/` — MDX documentation. Static site generation is already wired up.
 - `scripts/gen-api-docs.ts` — parses library sources and emits API type JSON.
+- `tests/` — library tests (Vitest browser mode, see [Tests](#tests)).
 - `content/docs/api/generated/` — generated API type data (do not edit by hand).
 
 ## Tech Stack
@@ -88,6 +127,7 @@ This repo contains three things in one place, kept together for easier sync and 
 - `npm run build:lib` — build the library only (uses `vite.lib.config.ts`).
 - `npm run docs:gen` / `npm run prebuild` — regenerate `content/docs/api/generated/` via `scripts/gen-api-docs.ts`.
 - `npm run types:check` — type-check the project.
+- `npm test` — run the library tests in headless Chromium.
 - `npm run lint` / `npm run format` — Biome.
 
 ## To Understand the Library
@@ -98,6 +138,16 @@ Read these first:
 - [content/docs/why.mdx](content/docs/why.mdx)
 - [content/docs/advanced/internals.mdx](content/docs/advanced/internals.mdx)
 - The source itself in [src/core/](src/core/)
+
+## Tests
+
+`npm test` runs `tests/**/*.test.ts` with **Vitest browser mode**: every test file runs inside a real headless Chromium (Playwright), because WebGPU, `requestAnimationFrame` and canvas don't exist in Node. Config: [vitest.config.ts](vitest.config.ts) — standalone, not merged with the site's `vite.config.ts`. First run on a machine needs the browser: `npx playwright install chromium`.
+
+- `tests/frame-limiter.test.ts` — the `maxFps` schedule (`src/core/utils/frame-limiter.ts`) fed synthetic rAF timestamps: display rates, jitter, dropped frames, gaps, limit changes. Deterministic, milliseconds.
+- `tests/max-fps.test.ts` — the render loop on a real `WebGPURenderer`: tick rate, TSL `deltaTime` / `frameId` read back from a compute pass, the rendered pixel's TSL `time`, `maxFpsPatchesRenderer`, `dispose()`, a replayed WebXR session. These measure real frames, so their assertions keep a few percent of slack.
+- `tests/helpers/` — `simulate-display.ts` (synthetic display for the schedule), `scene.ts` (instrumented `ThreeStart` scene, three internals the tests read).
+
+Files run one at a time (`fileParallelism: false`): each runs in its own iframe, and a background iframe gets no `requestAnimationFrame`.
 
 ## Notes for Agents
 
@@ -211,7 +261,7 @@ This is what enables the "use markdown links to other classes" convention — se
 
 - Every public class, field, getter, and method should have at least a one-line description. The renderer shows `(no description)` blanks otherwise.
 - Use `@internal` to hide a member from both `.d.ts` (via `stripInternal: true`) and the API docs.
-- Use `@default <value>` on options fields to populate the `default` column.
+- Use `@default <value>` on options fields and getters to populate the `default` column.
 - Use `@deprecated` to flag deprecation; both `.d.ts` and the docs surface it.
 - Use `@lifecycle` to put a method in the **Override methods** section instead of regular Methods (for `onAwake`, `onUpdate`, etc).
 - `protected` members are auto-tagged `@protected` in the rendered table — no need to write the tag yourself.

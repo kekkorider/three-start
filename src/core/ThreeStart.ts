@@ -42,6 +42,27 @@ export interface ThreeStartOptions {
 	 */
 	manageLoopManually?: boolean;
 	/**
+	 * Upper limit of loop ticks per second, see `ctx.maxFps`.
+	 * @default Infinity
+	 */
+	maxFps?: number;
+	/**
+	 * Only matters once `maxFps` is finite — until then three.js is untouched either way.
+	 *
+	 * When `true`, a finite `maxFps` patches the renderer's internal animation loop: three-start
+	 * swaps the `requestAnimationFrame` provider of `renderer._animation` (a private three.js
+	 * field) for one that leaves out skipped frames, so three's own per-frame work — TSL
+	 * `time` / `deltaTime` / `frameId`, `renderer.info` reset, the inspector — runs only on
+	 * loop ticks too. The patch goes in when the loop runs with a limit set, or on the next
+	 * frame after one is set, and stays until `dispose()`.
+	 *
+	 * When `false`, three.js is left untouched and `maxFps` skips only `Update` and `render()`:
+	 * TSL `deltaTime` then measures one display frame, not the time since the last tick.
+	 * Also falls back to that when the renderer has no such internal loop.
+	 * @default true
+	 */
+	maxFpsPatchesRenderer?: boolean;
+	/**
 	 * When `true`, calls `renderer.init()` inside the constructor.
 	 * @default true
 	 */
